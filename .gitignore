@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+npm-debug.log*
+*.tsbuildinfo
+
+# 環境変数（秘密情報を含むため）
+.env
+.env.local
+*.env.local
+
+# OS
+.DS_Store
