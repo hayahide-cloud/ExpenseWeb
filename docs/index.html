@@ -65,6 +65,22 @@
   .card h2 { font-size: 14px; color: var(--accent-soft); margin-bottom: 12px; font-weight: 600; }
 
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  textarea {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 12px;
+    font-size: 16px;
+    font-family: inherit;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    resize: vertical;
+    min-height: 64px;
+  }
+  textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(160, 107, 255, 0.2); }
   input, select {
     display: block;
     width: 100%;
@@ -122,6 +138,9 @@
   }
   button.small { width: auto; padding: 8px 12px; font-size: 13px; margin: 0; }
   button.danger-ghost { background: transparent; border: none; color: var(--danger); width: auto; padding: 6px; font-size: 13px; margin: 0; }
+  button.edit-ghost { background: transparent; border: none; color: var(--accent-soft); width: auto; padding: 6px 10px 6px 6px; font-size: 13px; margin: 0; }
+  .receipt-item .row-buttons { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+  .receipt-item .note-line { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
   .file-button {
     display: flex;
@@ -233,7 +252,7 @@
     </div>
 
     <div id="form-step" class="card hidden">
-      <h2>内容を確認・修正</h2>
+      <h2 id="form-title">内容を確認・修正</h2>
       <div id="review-banner" class="banner warn hidden"></div>
       <label>日付
         <input type="date" id="f-date">
@@ -251,6 +270,9 @@
       </label>
       <label>摘要 <span class="char-counter"><span id="memo-count">0</span>/20</span>
         <input type="text" id="f-memo" maxlength="20" placeholder="購入品目の要約">
+      </label>
+      <label>備考（整理用メモ・Excel明細のI列に出力）
+        <textarea id="f-note" rows="3" placeholder="例: 7月定例会議の会食、○○案件の打合せ"></textarea>
       </label>
       <button id="save-btn">保存</button>
       <button id="cancel-btn" class="ghost">キャンセル</button>
@@ -321,7 +343,8 @@
 // ===== 定数（ExpenseVBA / ExpenseWebと同一のスキーマ・文言を維持する） =====
 const CATEGORIES = ["交通費", "会議費", "消耗品費", "交際費", "通信費", "雑費"];
 const SOURCE_MARKER = "(Lite取込)";
-const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "勘定科目", "摘要", "元ファイル名", "要確認"];
+// 1〜8列目はExpenseVBAの明細シートと同一。9列目の備考は整理用メモ（末尾追加なので取込互換を壊さない）
+const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "勘定科目", "摘要", "元ファイル名", "要確認", "備考"];
 const STORAGE_KEY = "expenseweb_lite_receipts";
 const SETTINGS_KEY = "expenseweb_lite_settings";
 const DEFAULT_MODEL = "gpt-5.4";
@@ -364,7 +387,7 @@ function buildCsv(rows) {
     lines.push([
       formatDateTime(r.created_at),
       r.date, r.vendor, r.amount, r.category, r.memo,
-      r.filename || SOURCE_MARKER, r.needs_review,
+      r.filename || SOURCE_MARKER, r.needs_review, r.note ?? "",
     ].map(escape).join(","));
   }
   return "\ufeff" + lines.join("\r\n") + "\r\n";
@@ -607,12 +630,14 @@ function showMessage(kind, text) {
   $("capture-message").appendChild(div);
 }
 
-function openForm(data) {
+function openForm(data, title) {
+  $("form-title").textContent = title ?? "内容を確認・修正";
   $("f-date").value = data.date;
   $("f-vendor").value = data.vendor;
   $("f-amount").value = data.amount;
   $("f-category").value = data.category;
   $("f-memo").value = data.memo;
+  $("f-note").value = data.note ?? "";
   $("memo-count").textContent = String(data.memo.length);
   const review = computeNeedsReview(data.date, data.vendor, data.amount, data.category);
   $("review-banner").textContent = review;
@@ -621,12 +646,27 @@ function openForm(data) {
   $("form-step").classList.remove("hidden");
 }
 
+// 解析中の証憑画像と編集対象ID。フォームを閉じる時に必ずリセットする
+// （キャンセルした撮影画像が、次の編集保存時に誤って添付されるのを防ぐ）
+let currentImage = null;
+let editingId = null;
+
 function closeForm() {
   $("form-step").classList.add("hidden");
   $("capture-step").classList.remove("hidden");
   $("image-input").value = "";
   $("preview").style.display = "none";
   $("analyze-btn").disabled = true;
+  currentImage = null;
+  editingId = null;
+}
+
+// 一覧から既存明細の編集を開始する
+function startEdit(r) {
+  currentImage = null;
+  editingId = r.id;
+  openForm(r, "明細を編集");
+  showPanel("capture");
 }
 
 function renderList() {
@@ -659,6 +699,12 @@ function renderList() {
     const meta = document.createElement("span");
     meta.className = "meta";
     meta.textContent = [r.date || "日付なし", r.category || "科目なし", r.memo].filter(Boolean).join(" / ");
+    const buttons = document.createElement("span");
+    buttons.className = "row-buttons";
+    const edit = document.createElement("button");
+    edit.className = "edit-ghost";
+    edit.textContent = "編集";
+    edit.addEventListener("click", () => startEdit(r));
     const del = document.createElement("button");
     del.className = "danger-ghost";
     del.textContent = "削除";
@@ -668,9 +714,16 @@ function renderList() {
       await deleteImage(r.id).catch(() => {});
       renderList();
     });
-    row2.append(meta, del);
+    buttons.append(edit, del);
+    row2.append(meta, buttons);
 
     item.append(row1, row2);
+    if (r.note) {
+      const note = document.createElement("div");
+      note.className = "note-line";
+      note.textContent = "📎 " + r.note;
+      item.appendChild(note);
+    }
     if (r.needs_review) {
       const review = document.createElement("div");
       review.className = "review";
@@ -711,9 +764,6 @@ document.addEventListener("DOMContentLoaded", () => {
     showMessage("", "");
   });
 
-  // 解析中の画像を保存時までモジュール内で保持する（証憑としてIndexedDBへ保存するため）
-  let currentImage = null;
-
   // 解析
   $("analyze-btn").addEventListener("click", async () => {
     const file = $("image-input").files[0];
@@ -726,6 +776,7 @@ document.addEventListener("DOMContentLoaded", () => {
       currentImage = await downscaleImage(file).catch(() => file);
       const dataUrl = await blobToDataUrl(currentImage);
       const result = await analyzeImage(dataUrl);
+      editingId = null;
       openForm(result);
       showMessage("", "");
     } catch (err) {
@@ -739,6 +790,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // 手入力（証憑画像なし）
   $("manual-btn").addEventListener("click", () => {
     currentImage = null;
+    editingId = null;
     openForm({ date: "", vendor: "", amount: 0, category: "", memo: "" });
   });
 
@@ -747,18 +799,34 @@ document.addEventListener("DOMContentLoaded", () => {
     $("memo-count").textContent = String($("f-memo").value.length);
   });
 
-  // 保存
+  // 保存（新規作成 or 既存明細の更新）
   $("save-btn").addEventListener("click", async () => {
     const date = $("f-date").value;
     const vendor = $("f-vendor").value.trim();
     const amount = parseInt($("f-amount").value, 10) || 0;
     const category = $("f-category").value;
     const memo = $("f-memo").value.trim().slice(0, 20);
+    const note = $("f-note").value.trim();
+    const needsReview = computeNeedsReview(date, vendor, amount, category);
+
+    const rows = loadReceipts();
+
+    if (editingId) {
+      // 既存明細の更新。証憑画像・取込日時・元ファイル名は変更しない
+      const row = rows.find((x) => x.id === editingId);
+      if (row) {
+        Object.assign(row, { date, vendor, amount, category, memo, note, needs_review: needsReview });
+      }
+      saveReceipts(rows);
+      closeForm();
+      showPanel("list");
+      return;
+    }
 
     const row = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      date, vendor, amount, category, memo,
-      needs_review: computeNeedsReview(date, vendor, amount, category),
+      date, vendor, amount, category, memo, note,
+      needs_review: needsReview,
       created_at: new Date().toISOString(),
       filename: "",
     };
@@ -772,12 +840,10 @@ document.addEventListener("DOMContentLoaded", () => {
         row.filename = "";
         alert("証憑画像の保存に失敗しました（明細は保存されます）: " + err.message);
       }
-      currentImage = null;
     } else {
       row.filename = "(手入力)";
     }
 
-    const rows = loadReceipts();
     rows.push(row);
     saveReceipts(rows);
     closeForm();
