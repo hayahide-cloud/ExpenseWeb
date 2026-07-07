@@ -234,6 +234,26 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .hidden { display: none !important; }
+
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(80px + env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(10px);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 50;
+    max-width: 82%;
+    text-align: center;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .note { font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 8px; }
 </style>
 </head>
@@ -435,16 +455,39 @@ function buildShareText(r) {
 // 証憑画像を添付して共有シートを開く（メール以外にSlack・LINE等も選べる）。
 // 非対応環境（主にデスクトップブラウザ）では、画像添付なしのmailto:にフォールバックする
 // （メールの仕様上、mailto:からファイルを自動添付する方法は存在しないため）。
+// 一時的な通知を画面下部に表示する（アラートより控えめな結果報告用）
+function showToast(message) {
+  let toast = document.getElementById("toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => toast.classList.remove("show"), 3200);
+}
+
 async function shareReceipt(r) {
   const { subject, body } = buildShareText(r);
   const hasImage = r.filename && r.filename !== "(手入力)";
   const blob = hasImage ? await getImage(r.id).catch(() => null) : null;
+
+  // 共有先アプリが本文・添付を正しく展開しないことがある（例: 一部メールクライアントの
+  // Web共有ターゲット実装の不具合）ため、常に先に本文をクリップボードへコピーしておき、
+  // 共有が失敗・不完全でも手動で貼り付け直せるようにする
+  const copied = await (navigator.clipboard?.writeText(`${subject}\n\n${body}`)
+    .then(() => true)
+    .catch(() => false) ?? Promise.resolve(false));
+  const copiedNote = copied ? "（本文はクリップボードにもコピー済み）" : "";
 
   if (blob && navigator.canShare) {
     const file = new File([blob], r.filename, { type: blob.type || "image/jpeg" });
     if (navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: subject, text: body });
+        showToast("共有しました" + copiedNote);
         return;
       } catch (err) {
         if (err.name === "AbortError") return; // 共有をキャンセルしただけなので何もしない
@@ -455,6 +498,7 @@ async function shareReceipt(r) {
     // ファイル共有には非対応だがテキスト共有はできる環境
     try {
       await navigator.share({ title: subject, text: body });
+      showToast("共有しました" + copiedNote);
       return;
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -463,10 +507,11 @@ async function shareReceipt(r) {
 
   // フォールバック: mailto:（画像は添付できないため手動添付が必要な旨を案内する）
   if (hasImage) {
-    alert("この端末はファイル共有に対応していないため、画像は自動添付できません。\nメールを開くので、画像は別途手動で添付してください。");
+    alert("この端末はファイル共有に対応していないため、画像は自動添付できません。\nメールを開くので、画像は別途手動で添付してください（「画像保存」ボタンでダウンロードできます）。");
   }
   const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   window.location.href = mailto;
+  if (copied) showToast("本文をクリップボードにコピーしました");
 }
 
 // 金額入力欄はカンマ区切り表示にするためtype="text"で扱う。
@@ -701,6 +746,19 @@ async function analyzeImage(dataUrl) {
   };
 }
 
+function downloadBlob(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  // 日本語等の非ASCII文字を含むファイル名の場合、要素がDOMに存在しないと
+  // download属性が無視され「download」という汎用名で保存されることがあるため、
+  // 一時的にDOMへ追加してからクリックする
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 // ===== UI =====
 const $ = (id) => document.getElementById(id);
 
@@ -832,6 +890,22 @@ function renderList() {
         share.disabled = false;
       }
     });
+    const hasImageForRow = r.filename && r.filename !== "(手入力)";
+    let saveImage = null;
+    if (hasImageForRow) {
+      // 共有先アプリが添付を正しく展開しない場合の保険として、画像を直接ダウンロードできるようにする
+      saveImage = document.createElement("button");
+      saveImage.className = "edit-ghost save-image-ghost";
+      saveImage.textContent = "画像保存";
+      saveImage.addEventListener("click", async () => {
+        const blob = await getImage(r.id).catch(() => null);
+        if (!blob) {
+          alert("証憑画像が見つかりませんでした。");
+          return;
+        }
+        downloadBlob(blob, r.filename);
+      });
+    }
     const edit = document.createElement("button");
     edit.className = "edit-ghost";
     edit.textContent = "編集";
@@ -845,7 +919,7 @@ function renderList() {
       await deleteImage(r.id).catch(() => {});
       renderList();
     });
-    buttons.append(share, edit, del);
+    buttons.append(share, ...(saveImage ? [saveImage] : []), edit, del);
     row2.append(meta, buttons);
 
     item.append(row1, row2);
@@ -980,8 +1054,13 @@ document.addEventListener("DOMContentLoaded", () => {
     showMessage("ok", "保存しました。次のレシートを撮影できます。");
   });
 
-  // キャンセル
-  $("cancel-btn").addEventListener("click", closeForm);
+  // キャンセル。編集中だった場合は一覧タブへ戻す（保存時と挙動を揃える）。
+  // 新規撮影のキャンセルの場合はそのまま取込タブに留まる
+  $("cancel-btn").addEventListener("click", () => {
+    const wasEditing = editingId !== null;
+    closeForm();
+    if (wasEditing) showPanel("list");
+  });
 
   // 証憑画像の表示/非表示トグル（編集画面）
   $("toggle-image-btn").addEventListener("click", () => {
@@ -1010,14 +1089,6 @@ document.addEventListener("DOMContentLoaded", () => {
       .filter((r) => !month || r.date.startsWith(month + "-"))
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
     return { month, rows };
-  }
-
-  function downloadBlob(blob, filename) {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(a.href);
   }
 
   // CSVのみエクスポート
