@@ -137,18 +137,31 @@
     font-weight: 500;
   }
   button.small { width: auto; padding: 8px 12px; font-size: 13px; margin: 0; }
-  button.danger-ghost-block {
-    background: transparent;
-    border: 1px solid var(--danger);
-    color: var(--danger);
-    font-weight: 500;
-  }
-  button.share-block {
-    background: rgba(124, 58, 237, 0.15);
+
+  /* 申請・画像保存: 保存ボタンより控えめな、横並びの補助アクション */
+  .action-row { display: flex; gap: 8px; margin-top: 8px; }
+  .action-row button { margin-top: 0; flex: 1; }
+  button.action-btn {
+    background: rgba(124, 58, 237, 0.12);
     border: 1px solid var(--border);
     color: var(--accent-soft);
     font-weight: 600;
+    font-size: 14px;
+    padding: 12px;
   }
+  /* キャンセル・削除: ブロックボタンではなく控えめなテキストリンクにして視覚的な重さを下げる */
+  button.text-link {
+    display: block;
+    width: auto;
+    background: none;
+    border: none;
+    margin: 14px auto 0;
+    padding: 4px 8px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  button.text-link.danger { color: var(--danger); }
 
   .file-button {
     display: flex;
@@ -310,10 +323,12 @@
         <textarea id="f-note" rows="3" placeholder="例: 7月定例会議の会食、○○案件の打合せ"></textarea>
       </label>
       <button id="save-btn">保存</button>
-      <button id="cancel-btn" class="ghost">キャンセル</button>
-      <button id="share-btn" class="share-block hidden">申請</button>
-      <button id="save-image-btn" class="ghost hidden">画像保存</button>
-      <button id="delete-btn" class="danger-ghost-block hidden">この明細を削除</button>
+      <div class="action-row">
+        <button id="share-btn" class="action-btn hidden">📤 申請</button>
+        <button id="save-image-btn" class="action-btn hidden">💾 画像保存</button>
+      </div>
+      <button id="cancel-btn" class="text-link">キャンセル</button>
+      <button id="delete-btn" class="text-link danger hidden">この明細を削除</button>
     </div>
   </section>
 
