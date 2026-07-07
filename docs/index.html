@@ -1094,9 +1094,12 @@ document.addEventListener("DOMContentLoaded", () => {
     $("f-category").appendChild(opt);
   }
 
-  // 設定の復元
+  // 設定の復元。APIキーは長い●●●が並んで見づらいため入力欄には復元せず、
+  // 末尾4文字だけをplaceholderで示す（変更する場合のみ再入力してもらう）
   const settings = loadSettings();
-  $("s-apikey").value = settings.apiKey ?? "";
+  if (settings.apiKey) {
+    $("s-apikey").placeholder = `設定済み（末尾: ...${settings.apiKey.slice(-4)}）変更する場合のみ入力`;
+  }
   $("s-model").value = settings.model ?? DEFAULT_MODEL;
 
   // ナビゲーション
@@ -1333,12 +1336,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 設定保存
+  // 設定保存。APIキー欄が空のまま保存した場合は、既存のキーを保持する
+  // （表示上は毎回空欄にしているため、空保存＝削除にしてしまうと事故になる）
   $("settings-save-btn").addEventListener("click", () => {
+    const inputKey = $("s-apikey").value.trim();
+    const apiKey = inputKey || loadSettings().apiKey || "";
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-      apiKey: $("s-apikey").value.trim(),
+      apiKey,
       model: $("s-model").value.trim() || DEFAULT_MODEL,
     }));
+    $("s-apikey").value = "";
+    if (apiKey) {
+      $("s-apikey").placeholder = `設定済み（末尾: ...${apiKey.slice(-4)}）変更する場合のみ入力`;
+    }
     alert("設定を保存しました。");
   });
 
