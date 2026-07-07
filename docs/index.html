@@ -137,7 +137,12 @@
     font-weight: 500;
   }
   button.small { width: auto; padding: 8px 12px; font-size: 13px; margin: 0; }
-  button.danger-ghost { background: transparent; border: none; color: var(--danger); width: auto; padding: 6px; font-size: 13px; margin: 0; }
+  button.danger-ghost-block {
+    background: transparent;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    font-weight: 500;
+  }
   button.edit-ghost { background: transparent; border: none; color: var(--accent-soft); width: auto; padding: 6px 10px 6px 6px; font-size: 13px; margin: 0; }
   button.share-ghost {
     background: rgba(124, 58, 237, 0.15);
@@ -186,6 +191,7 @@
     border-radius: 14px;
     padding: 12px 14px;
     margin-bottom: 10px;
+    cursor: pointer;
   }
   .receipt-item .row1 { display: flex; justify-content: space-between; align-items: baseline; }
   .receipt-item .vendor { font-weight: 600; font-size: 15px; }
@@ -311,6 +317,7 @@
       </label>
       <button id="save-btn">保存</button>
       <button id="cancel-btn" class="ghost">キャンセル</button>
+      <button id="delete-btn" class="danger-ghost-block hidden">この明細を削除</button>
     </div>
   </section>
 
@@ -781,6 +788,8 @@ function showMessage(kind, text) {
 
 function openForm(data, title) {
   $("form-title").textContent = title ?? "内容を確認・修正";
+  // 削除ボタンは既存明細の編集時のみ表示する（新規撮影・手入力では表示しない）
+  $("delete-btn").classList.toggle("hidden", editingId === null);
   $("f-date").value = data.date;
   $("f-vendor").value = data.vendor;
   $("f-amount").value = formatAmountForInput(data.amount);
@@ -854,6 +863,9 @@ function renderList() {
   for (const r of rows) {
     const item = document.createElement("div");
     item.className = "receipt-item";
+    // 行全体をタップすると編集画面を開く。申請/画像保存ボタンは各自でstopPropagationし、
+    // ボタン操作が誤って編集画面遷移も引き起こさないようにする
+    item.addEventListener("click", () => startEdit(r));
 
     // 整理用メモ（備考）がある場合はそれを主見出しにし、支払先はメタ情報側へ回す。
     // 備考は「何の会議・案件か」で一覧を見返す用途のため、支払先より優先度が高い
@@ -882,7 +894,8 @@ function renderList() {
     const share = document.createElement("button");
     share.className = "share-ghost";
     share.textContent = "申請";
-    share.addEventListener("click", async () => {
+    share.addEventListener("click", async (e) => {
+      e.stopPropagation(); // 行タップ(編集画面遷移)を誘発しないようにする
       share.disabled = true;
       try {
         await shareReceipt(r);
@@ -897,7 +910,8 @@ function renderList() {
       saveImage = document.createElement("button");
       saveImage.className = "edit-ghost save-image-ghost";
       saveImage.textContent = "画像保存";
-      saveImage.addEventListener("click", async () => {
+      saveImage.addEventListener("click", async (e) => {
+        e.stopPropagation();
         const blob = await getImage(r.id).catch(() => null);
         if (!blob) {
           alert("証憑画像が見つかりませんでした。");
@@ -906,20 +920,7 @@ function renderList() {
         downloadBlob(blob, r.filename);
       });
     }
-    const edit = document.createElement("button");
-    edit.className = "edit-ghost";
-    edit.textContent = "編集";
-    edit.addEventListener("click", () => startEdit(r));
-    const del = document.createElement("button");
-    del.className = "danger-ghost";
-    del.textContent = "削除";
-    del.addEventListener("click", async () => {
-      if (!confirm("この明細を削除しますか？")) return;
-      saveReceipts(loadReceipts().filter((x) => x.id !== r.id));
-      await deleteImage(r.id).catch(() => {});
-      renderList();
-    });
-    buttons.append(share, ...(saveImage ? [saveImage] : []), edit, del);
+    buttons.append(share, ...(saveImage ? [saveImage] : []));
     row2.append(meta, buttons);
 
     item.append(row1, row2);
@@ -1060,6 +1061,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const wasEditing = editingId !== null;
     closeForm();
     if (wasEditing) showPanel("list");
+  });
+
+  // 削除（編集画面から）。編集中の明細のみ対象（新規撮影・手入力ではボタン自体を隠している）
+  $("delete-btn").addEventListener("click", async () => {
+    if (!editingId) return;
+    if (!confirm("この明細を削除しますか？")) return;
+    const idToDelete = editingId;
+    saveReceipts(loadReceipts().filter((x) => x.id !== idToDelete));
+    await deleteImage(idToDelete).catch(() => {});
+    closeForm();
+    showPanel("list");
   });
 
   // 証憑画像の表示/非表示トグル（編集画面）
