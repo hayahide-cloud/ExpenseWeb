@@ -199,16 +199,20 @@
   /* 手動トリミングエディタ: 画像の上に四隅のドラッグハンドルを重ねる */
   #crop-editor { margin-top: 12px; }
   /* touch-action:noneで画像上のタッチによるスクロール・引っ張って更新を無効化。
-     user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ */
+     user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ。
+     幅はキャンバス（＝画像の表示サイズ）に合わせて中央寄せする */
   #crop-stage {
     position: relative;
+    width: fit-content;
+    margin: 0 auto;
     touch-action: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
     cursor: grab;
   }
-  #crop-canvas { width: 100%; display: block; border-radius: 12px; border: 1px solid var(--border); }
+  /* サイズは画面に収まるようJSで計算して設定する */
+  #crop-canvas { display: block; border-radius: 12px; border: 1px solid var(--border); }
   /* ハンドルは見た目のみ。当たり判定はステージ側で「最寄りの角を掴む」方式のため
      pointer-events:noneにして、タッチはすべて#crop-stageが受ける */
   .crop-handle {
@@ -495,7 +499,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-07.6 誤タップ対策・写真の復元";
+const APP_VERSION = "2026-07-08.1 画像の表示サイズ縮小・拡大鏡1.5倍";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1102,15 +1106,20 @@ function detectInitialQuad(canvas) {
 
 function renderCropEditor() {
   if (!cropPreviewCanvas || !cropQuad) return;
-  const stage = $("crop-stage");
   const canvas = $("crop-canvas");
-  const cssW = stage.clientWidth;
+  const editorW = $("crop-editor").clientWidth;
   // レイアウト確定前に呼ばれた場合（hidden解除直後など）は次フレームで再試行する
-  if (cssW === 0) { requestAnimationFrame(renderCropEditor); return; }
-  const cssH = cssW * cropPreviewCanvas.height / cropPreviewCanvas.width;
+  if (editorW === 0) { requestAnimationFrame(renderCropEditor); return; }
+  // 縦長の写真でもスクロールせずに全体と操作ボタンが見えるよう、
+  // カード幅×画面高さの約半分のボックスに収まるサイズで表示する
+  const maxH = Math.round(window.innerHeight * 0.5);
+  const fit = Math.min(editorW / cropPreviewCanvas.width, maxH / cropPreviewCanvas.height);
+  const cssW = Math.round(cropPreviewCanvas.width * fit);
+  const cssH = Math.round(cropPreviewCanvas.height * fit);
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = `${cssW}px`;
   canvas.style.height = `${cssH}px`;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(cropPreviewCanvas, 0, 0, canvas.width, canvas.height);
@@ -1152,13 +1161,13 @@ function resetCropEditor() {
 // 指の少し上に浮かんでドラッグに追従する（横方向は画面からはみ出しすぎない範囲にクランプ）
 function updateCropLoupe(cornerIndex) {
   const loupe = $("crop-loupe");
-  const stage = $("crop-stage");
-  const cssW = stage.clientWidth;
+  const canvasEl = $("crop-canvas");
+  const cssW = canvasEl.clientWidth;
+  const cssH = canvasEl.clientHeight;
   if (!cropSourceCanvas || cssW === 0) return;
-  const cssH = cssW * cropSourceCanvas.height / cropSourceCanvas.width;
   const dpr = window.devicePixelRatio || 1;
   const D = 120; // 拡大鏡の直径(CSSピクセル)
-  const zoom = 2.5; // 画面表示に対する拡大率
+  const zoom = 1.5; // 画面表示に対する拡大率（強すぎると位置の把握が難しいため控えめに）
   loupe.width = Math.round(D * dpr);
   loupe.height = Math.round(D * dpr);
 
