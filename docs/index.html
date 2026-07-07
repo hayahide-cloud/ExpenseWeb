@@ -139,7 +139,17 @@
   button.small { width: auto; padding: 8px 12px; font-size: 13px; margin: 0; }
   button.danger-ghost { background: transparent; border: none; color: var(--danger); width: auto; padding: 6px; font-size: 13px; margin: 0; }
   button.edit-ghost { background: transparent; border: none; color: var(--accent-soft); width: auto; padding: 6px 10px 6px 6px; font-size: 13px; margin: 0; }
-  .receipt-item .row-buttons { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+  button.share-ghost {
+    background: rgba(124, 58, 237, 0.15);
+    border: 1px solid var(--border);
+    color: var(--accent-soft);
+    width: auto;
+    padding: 6px 10px;
+    font-size: 13px;
+    margin: 0;
+    border-radius: 8px;
+  }
+  .receipt-item .row-buttons { display: flex; gap: 4px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
   .file-button {
     display: flex;
@@ -404,6 +414,59 @@ function makeImageFilename(r) {
   const datePart = (r.date || "\u65e5\u4ed8\u306a\u3057").replaceAll("-", "");
   const vendorPart = sanitize(r.vendor) || "\u652f\u6255\u5148\u306a\u3057";
   return `${datePart}_${vendorPart}_${r.amount}\u5186_${r.id.slice(-4)}.jpg`;
+}
+
+// 申請メール用の件名・本文を組み立てる
+function buildShareText(r) {
+  const subjectLabel = r.note || r.vendor || "経費申請";
+  const subject = `経費申請: ${subjectLabel}${r.date ? "（" + r.date + "）" : ""}`;
+  const body = [
+    `日付: ${r.date || "（未入力）"}`,
+    `支払先: ${r.vendor || "（未入力）"}`,
+    `金額: ¥${Number(r.amount).toLocaleString()}`,
+    `勘定科目: ${r.category || "（未入力）"}`,
+    `摘要: ${r.memo || "（未入力）"}`,
+    r.note ? `備考: ${r.note}` : null,
+  ].filter((line) => line !== null).join("\n");
+  return { subject, body };
+}
+
+// 「申請」ボタンの処理。Web共有APIが使え、かつファイル共有に対応していれば
+// 証憑画像を添付して共有シートを開く（メール以外にSlack・LINE等も選べる）。
+// 非対応環境（主にデスクトップブラウザ）では、画像添付なしのmailto:にフォールバックする
+// （メールの仕様上、mailto:からファイルを自動添付する方法は存在しないため）。
+async function shareReceipt(r) {
+  const { subject, body } = buildShareText(r);
+  const hasImage = r.filename && r.filename !== "(手入力)";
+  const blob = hasImage ? await getImage(r.id).catch(() => null) : null;
+
+  if (blob && navigator.canShare) {
+    const file = new File([blob], r.filename, { type: blob.type || "image/jpeg" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: subject, text: body });
+        return;
+      } catch (err) {
+        if (err.name === "AbortError") return; // 共有をキャンセルしただけなので何もしない
+        // それ以外のエラーはmailto:フォールバックへ続行
+      }
+    }
+  } else if (navigator.share) {
+    // ファイル共有には非対応だがテキスト共有はできる環境
+    try {
+      await navigator.share({ title: subject, text: body });
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+  }
+
+  // フォールバック: mailto:（画像は添付できないため手動添付が必要な旨を案内する）
+  if (hasImage) {
+    alert("この端末はファイル共有に対応していないため、画像は自動添付できません。\nメールを開くので、画像は別途手動で添付してください。");
+  }
+  const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
 }
 
 // 金額入力欄はカンマ区切り表示にするためtype="text"で扱う。
@@ -758,6 +821,17 @@ function renderList() {
     meta.textContent = metaParts.filter(Boolean).join(" / ");
     const buttons = document.createElement("span");
     buttons.className = "row-buttons";
+    const share = document.createElement("button");
+    share.className = "share-ghost";
+    share.textContent = "申請";
+    share.addEventListener("click", async () => {
+      share.disabled = true;
+      try {
+        await shareReceipt(r);
+      } finally {
+        share.disabled = false;
+      }
+    });
     const edit = document.createElement("button");
     edit.className = "edit-ghost";
     edit.textContent = "編集";
@@ -771,7 +845,7 @@ function renderList() {
       await deleteImage(r.id).catch(() => {});
       renderList();
     });
-    buttons.append(edit, del);
+    buttons.append(share, edit, del);
     row2.append(meta, buttons);
 
     item.append(row1, row2);
