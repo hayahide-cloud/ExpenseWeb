@@ -136,6 +136,22 @@
     color: var(--accent-soft);
     font-weight: 500;
   }
+  /* <a>タグはbuttonの箱組みを継承しないため、リンクボタン用に個別定義する */
+  a.link-btn {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px;
+    font-size: 16px;
+    text-align: center;
+    text-decoration: none;
+    border-radius: 12px;
+    margin-top: 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--accent-soft);
+    font-weight: 500;
+  }
   button.small { width: auto; padding: 8px 12px; font-size: 13px; margin: 0; }
 
   /* 申請・画像保存: 保存ボタンより控えめな、横並びの補助アクション */
@@ -379,6 +395,9 @@
         モデルIDは必ず小文字で入力してください（例: gpt-5.4）。<br>
         明細データもこの端末内にのみ保存されます。月次でCSVエクスポートしてください。
       </p>
+      <!-- OpenAIはAPIキー経由でクレジット残高を取得する公式APIを提供していないため、
+           アプリ内表示ではなく公式の利用状況ページへのリンクにとどめている -->
+      <a id="openai-usage-link" class="ghost link-btn" href="https://platform.openai.com/settings/organization/usage" target="_blank" rel="noopener">📊 OpenAIの利用状況を見る</a>
     </div>
     <div class="card">
       <h2>データ管理</h2>
