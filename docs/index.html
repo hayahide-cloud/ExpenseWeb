@@ -577,7 +577,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.8 トリミング画面の整理";
+const APP_VERSION = "2026-07-08.9 按分の人数指定を整理";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -614,12 +614,12 @@ function buildCsv(rows) {
   };
   const lines = [CSV_HEADERS.join(",")];
   for (const r of rows) {
-    const perPerson = r.split_people ? Math.floor(Number(r.amount) / r.split_people) : "";
+    const perPerson = r.split_people >= 2 ? Math.floor(Number(r.amount) / r.split_people) : "";
     lines.push([
       formatDateTime(r.created_at),
       r.date, r.vendor, r.amount, r.category, r.memo,
       r.filename || SOURCE_MARKER, r.needs_review, r.note ?? "",
-      r.split_people ?? "", perPerson,
+      r.split_people >= 2 ? r.split_people : "", perPerson,
     ].map(escape).join(","));
   }
   return "\ufeff" + lines.join("\r\n") + "\r\n";
@@ -644,7 +644,7 @@ function buildShareText(r) {
     `勘定科目: ${r.category || "（未入力）"}`,
     `摘要: ${r.memo || "（未入力）"}`,
     r.note ? `備考: ${r.note}` : null,
-    r.split_people ? `按分: ${r.split_people}人で ¥${Math.floor(Number(r.amount) / r.split_people).toLocaleString()}/人` : null,
+    r.split_people >= 2 ? `按分: ${r.split_people}人で ¥${Math.floor(Number(r.amount) / r.split_people).toLocaleString()}/人` : null,
   ].filter((line) => line !== null).join("\n");
   return { subject, body };
 }
@@ -1331,8 +1331,8 @@ function openForm(data, title) {
   $("capture-step").classList.add("hidden");
   $("form-step").classList.remove("hidden");
   resetSplitCalc();
-  // 記録済みの按分人数があれば、パネルを開いた状態で復元する
-  if (data.split_people) {
+  // 記録済みの按分人数（2以上）があれば、パネルを開いた状態で復元する
+  if (data.split_people >= 2) {
     $("split-people").value = data.split_people;
     $("split-panel").classList.remove("hidden");
     $("split-toggle-btn").textContent = "👥 按分計算を閉じる";
@@ -1345,14 +1345,33 @@ function openForm(data, title) {
 function resetSplitCalc() {
   $("split-panel").classList.add("hidden");
   $("split-toggle-btn").textContent = "👥 按分計算";
-  $("split-people").value = "";
+  $("split-people").value = "1"; // 既定は1（＝按分なしの通常動作）
   $("split-result").textContent = "";
+}
+
+// 入力欄の値から記録用の按分人数を得る。1は通常動作（按分なし）、0や不正値は無効として
+// いずれもnullを返し、2以上のときだけ按分として扱う
+function parseSplitPeople() {
+  const n = parseInt($("split-people").value, 10);
+  return n >= 2 ? n : null;
 }
 
 function updateSplitResult() {
   const total = parseAmountInput($("f-amount").value);
   const people = parseInt($("split-people").value, 10);
-  if (!total || !people || people < 1) {
+  if (Number.isNaN(people)) {
+    $("split-result").textContent = "";
+    return;
+  }
+  if (people === 0) {
+    $("split-result").textContent = "0人は指定できません";
+    return;
+  }
+  if (people === 1) {
+    $("split-result").textContent = "1人＝按分なし（通常の登録）";
+    return;
+  }
+  if (!total) {
     $("split-result").textContent = "";
     return;
   }
@@ -1521,7 +1540,7 @@ function getFormReceipt() {
     filename: editImageFilename || "(手入力)",
     // パネルの表示・非表示に関わらず、入力欄に値が残っていれば記録する
     // （計算後にパネルを閉じてから申請・保存するのは自然な操作のため）
-    split_people: parseInt($("split-people").value, 10) || null,
+    split_people: parseSplitPeople(),
   };
 }
 
@@ -1556,7 +1575,7 @@ function renderList() {
     amount.className = "amount";
     amount.textContent = "¥" + Number(r.amount).toLocaleString();
     amountWrap.append(amount);
-    if (r.split_people) {
+    if (r.split_people >= 2) {
       const perPerson = Math.floor(Number(r.amount) / r.split_people);
       const splitAmount = document.createElement("span");
       splitAmount.className = "split-amount";
@@ -1574,7 +1593,7 @@ function renderList() {
     // 日付→支払先→勘定科目/摘要の3行表示。按分計算を記録している場合は4行目に追加する
     const metaLine3 = [r.category || "科目なし", r.memo].filter(Boolean).join(" / ");
     const metaLines = [r.date || "日付なし", r.vendor || "（支払先なし）", metaLine3];
-    if (r.split_people) {
+    if (r.split_people >= 2) {
       const perPerson = Math.floor(Number(r.amount) / r.split_people);
       metaLines.push(`👥 ${r.split_people}人で按分 → ¥${perPerson.toLocaleString()}/人`);
     }
@@ -1825,9 +1844,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const memo = $("f-memo").value.trim().slice(0, 20);
     const note = $("f-note").value.trim();
     const needsReview = computeNeedsReview(date, vendor, amount, category);
-    // パネルの表示・非表示に関わらず、入力欄に値が残っていれば記録する
-    // （計算後にパネルを閉じてから保存するのは自然な操作のため）
-    const splitPeople = parseInt($("split-people").value, 10) || null;
+    // パネルの表示・非表示に関わらず、2人以上が入力されていれば記録する
+    // （計算後にパネルを閉じてから保存するのは自然な操作のため。1は通常動作、0は無効）
+    const splitPeople = parseSplitPeople();
 
     const rows = loadReceipts();
 
