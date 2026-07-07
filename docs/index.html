@@ -438,6 +438,7 @@ const SOURCE_MARKER = "(Lite取込)";
 const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "勘定科目", "摘要", "元ファイル名", "要確認", "備考", "按分人数", "1人あたり請求額"];
 const STORAGE_KEY = "expenseweb_lite_receipts";
 const SETTINGS_KEY = "expenseweb_lite_settings";
+const ACTIVE_PANEL_KEY = "expenseweb_lite_active_panel";
 const DEFAULT_MODEL = "gpt-5.4";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
@@ -953,6 +954,8 @@ function showPanel(name) {
   $(`panel-${name}`).classList.add("active");
   document.querySelector(`nav button[data-panel="${name}"]`).classList.add("active");
   if (name === "list") renderList();
+  // 画面更新後も同じタブを表示し続けられるよう、開いたタブを記録する
+  localStorage.setItem(ACTIVE_PANEL_KEY, name);
 }
 
 function showMessage(kind, text) {
@@ -1173,6 +1176,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("nav button").forEach((b) => {
     b.addEventListener("click", () => showPanel(b.dataset.panel));
   });
+
+  // 画面更新前に開いていたタブを復元する（未保存なら既定の「取込」タブのまま）
+  const validPanels = ["capture", "list", "settings"];
+  const lastPanel = localStorage.getItem(ACTIVE_PANEL_KEY);
+  if (validPanels.includes(lastPanel)) showPanel(lastPanel);
 
   // 画像選択（iOSの選択シートの並びをvideo/*も動画も選択できるようにしているが、
   // OCR解析は画像のみ対応のため動画が選ばれた場合はここで弾く）
