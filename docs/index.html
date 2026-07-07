@@ -471,7 +471,7 @@ const DRAFT_KEY = "expenseweb_lite_draft";
 const DRAFT_IMAGE_ID = "__draft__";
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-07.2 手動トリミング対応";
+const APP_VERSION = "2026-07-07.3 トリミング画質改善";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1045,8 +1045,22 @@ function showMessage(kind, text) {
 // iOSの「書類をスキャン」風に、画像上の四隅ハンドルをドラッグして切り抜き範囲を指定する。
 // 初期位置は背景検出(detectContentBounds)の結果をヒントとして置くが、最終判断は人間が行う
 // ため、自動検出の誤りで金額等が欠落する事故は起きない
-let cropSourceCanvas = null; // 選択画像を縮小したキャンバス（解析・保存の元データ）
+// 切り抜き元は高解像度(長辺3600px上限)で保持し、長辺1800pxの上限は切り抜き後の出力に
+// 適用する。先に1800pxへ縮小してから切り抜くと、レシート部分の解像度が数百pxまで落ちて
+// 粗くなるため。3600pxはiOS Safariのキャンバス面積上限(約1670万px)に収まる安全値
+let cropSourceCanvas = null; // 高解像度の切り抜き元（保存・OCR用）
+let cropPreviewCanvas = null; // エディタ表示用の縮小版（ドラッグ中の再描画を軽くする）
 let cropQuad = null; // 四隅の正規化座標(0〜1)。順序は[左上, 右上, 右下, 左下]
+
+// キャンバスを長辺maxDim以下に縮小した新しいキャンバスを返す（元より小さければそのまま複製）
+function downscaleCanvas(src, maxDim) {
+  const scale = Math.min(1, maxDim / Math.max(src.width, src.height));
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(src.width * scale));
+  out.height = Math.max(1, Math.round(src.height * scale));
+  out.getContext("2d").drawImage(src, 0, 0, out.width, out.height);
+  return out;
+}
 
 function detectInitialQuad(canvas) {
   const full = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
@@ -1063,19 +1077,19 @@ function detectInitialQuad(canvas) {
 }
 
 function renderCropEditor() {
-  if (!cropSourceCanvas || !cropQuad) return;
+  if (!cropPreviewCanvas || !cropQuad) return;
   const stage = $("crop-stage");
   const canvas = $("crop-canvas");
   const cssW = stage.clientWidth;
   // レイアウト確定前に呼ばれた場合（hidden解除直後など）は次フレームで再試行する
   if (cssW === 0) { requestAnimationFrame(renderCropEditor); return; }
-  const cssH = cssW * cropSourceCanvas.height / cropSourceCanvas.width;
+  const cssH = cssW * cropPreviewCanvas.height / cropPreviewCanvas.width;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   canvas.style.height = `${cssH}px`;
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(cropSourceCanvas, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(cropPreviewCanvas, 0, 0, canvas.width, canvas.height);
 
   // 選択範囲の外側を暗くして、切り抜かれる領域をわかりやすくする
   const pts = cropQuad.map((p) => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
@@ -1105,6 +1119,7 @@ function renderCropEditor() {
 function resetCropEditor() {
   $("crop-editor").classList.add("hidden");
   cropSourceCanvas = null;
+  cropPreviewCanvas = null;
   cropQuad = null;
 }
 
@@ -1419,8 +1434,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     $("analyze-btn").disabled = true;
     try {
-      cropSourceCanvas = await loadCanvasFromFile(file, 1800);
-      cropQuad = detectInitialQuad(cropSourceCanvas);
+      cropSourceCanvas = await loadCanvasFromFile(file, 3600);
+      cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
+      // 四隅の初期検出は縮小版で行う（結果は正規化座標なので元画像にそのまま使える）
+      cropQuad = detectInitialQuad(cropPreviewCanvas);
       $("crop-editor").classList.remove("hidden");
       renderCropEditor();
       $("analyze-btn").disabled = false;
