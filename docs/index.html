@@ -257,7 +257,51 @@
   #split-calc { margin-bottom: 16px; }
   #split-panel { margin-top: 8px; }
   #split-result { margin-top: 8px; font-size: 14px; color: var(--accent-soft); }
-  #edit-preview { max-width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--border); }
+  #edit-preview { max-width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--border); cursor: zoom-in; }
+
+  /* 証憑画像の拡大ビューア。ページ全体はズーム禁止のため、ここだけ独自にピンチ・パン対応 */
+  #image-viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(5, 3, 9, 0.97);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #viewer-img {
+    max-width: 100%;
+    max-height: 100%;
+    will-change: transform;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    pointer-events: none;
+  }
+  #viewer-close {
+    position: absolute;
+    top: calc(12px + env(safe-area-inset-top));
+    right: 12px;
+    width: auto;
+    margin: 0;
+    padding: 10px 16px;
+    font-size: 14px;
+    background: rgba(29, 23, 41, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: none;
+  }
+  #viewer-hint {
+    position: absolute;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+    pointer-events: none;
+  }
 
   .banner {
     padding: 10px 12px;
@@ -496,6 +540,13 @@
   </section>
 </main>
 
+<!-- 証憑画像の拡大ビューア -->
+<div id="image-viewer" class="hidden">
+  <img id="viewer-img" alt="証憑画像（拡大表示）">
+  <button type="button" id="viewer-close">✕ 閉じる</button>
+  <p id="viewer-hint">ピンチで拡大縮小 / ダブルタップで拡大・リセット</p>
+</div>
+
 <nav>
   <button data-panel="capture" class="active"><span class="icon">📷</span>取込</button>
   <button data-panel="list"><span class="icon">📋</span>一覧</button>
@@ -520,7 +571,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.6 ズーム無効化";
+const APP_VERSION = "2026-07-08.7 証憑画像のピンチ拡大";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1534,6 +1585,55 @@ function renderList() {
 }
 
 // ===== イベント登録 =====
+// ===== 証憑画像の拡大ビューア =====
+// ページ全体はズーム禁止のため、証憑画像だけ独自のピンチ・パン・ダブルタップ拡大で対応する
+const viewerState = { scale: 1, tx: 0, ty: 0 };
+const viewerPointers = new Map(); // ピンチ判定用に押下中のポインタを追跡する
+let viewerPinchStart = null;
+let viewerDownInfo = null;
+let viewerLastTap = { time: 0, x: 0, y: 0 };
+
+function applyViewerTransform() {
+  $("viewer-img").style.transform =
+    `translate(${viewerState.tx}px, ${viewerState.ty}px) scale(${viewerState.scale})`;
+}
+
+function resetViewerTransform() {
+  viewerState.scale = 1;
+  viewerState.tx = 0;
+  viewerState.ty = 0;
+  applyViewerTransform();
+}
+
+function openImageViewer(src) {
+  $("viewer-img").src = src;
+  resetViewerTransform();
+  $("image-viewer").classList.remove("hidden");
+}
+
+function closeImageViewer() {
+  $("image-viewer").classList.add("hidden");
+  $("viewer-img").src = "";
+  viewerPointers.clear();
+  viewerPinchStart = null;
+}
+
+// 指定した画面上の点(mx,my)を固定点として拡大率をnewScaleへ変更する
+function viewerZoomAround(mx, my, newScale) {
+  const rect = $("image-viewer").getBoundingClientRect();
+  const cx = rect.width / 2, cy = rect.height / 2;
+  const k = newScale / viewerState.scale;
+  viewerState.tx = (mx - cx) - k * ((mx - cx) - viewerState.tx);
+  viewerState.ty = (my - cy) - k * ((my - cy) - viewerState.ty);
+  viewerState.scale = newScale;
+  if (viewerState.scale <= 1.01) {
+    viewerState.scale = 1;
+    viewerState.tx = 0;
+    viewerState.ty = 0;
+  }
+  applyViewerTransform();
+}
+
 // iOS Safariはviewportのuser-scalable=noを無視してピンチズームできてしまうため、
 // Safari独自のジェスチャーイベントを止めて確実にズームを無効化する
 document.addEventListener("gesturestart", (e) => e.preventDefault());
@@ -1818,6 +1918,72 @@ document.addEventListener("DOMContentLoaded", async () => {
     img.classList.remove("hidden");
     $("toggle-image-btn").textContent = "📷 証憑画像を非表示";
   });
+
+  // 証憑画像をタップすると拡大ビューアを開く
+  $("edit-preview").addEventListener("click", () => {
+    if ($("edit-preview").src) openImageViewer($("edit-preview").src);
+  });
+  $("viewer-close").addEventListener("click", closeImageViewer);
+
+  // 拡大ビューアのジェスチャー処理（ピンチ＝拡大縮小、1本指＝パン、ダブルタップ＝拡大/リセット）
+  {
+    const viewerEl = $("image-viewer");
+    viewerEl.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("#viewer-close")) return; // 閉じるボタンのタップは邪魔しない
+      e.preventDefault();
+      viewerEl.setPointerCapture(e.pointerId);
+      viewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (viewerPointers.size === 1) {
+        viewerDownInfo = { x: e.clientX, y: e.clientY, time: Date.now() };
+      } else if (viewerPointers.size === 2) {
+        const [p1, p2] = [...viewerPointers.values()];
+        viewerPinchStart = {
+          dist: Math.hypot(p1.x - p2.x, p1.y - p2.y),
+          scale: viewerState.scale,
+        };
+        viewerDownInfo = null; // 2本目が触れたらタップ判定はしない
+      }
+    });
+    viewerEl.addEventListener("pointermove", (e) => {
+      if (!viewerPointers.has(e.pointerId)) return;
+      const prev = viewerPointers.get(e.pointerId);
+      viewerPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (viewerPointers.size === 2 && viewerPinchStart) {
+        const [p1, p2] = [...viewerPointers.values()];
+        const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        if (viewerPinchStart.dist === 0) return;
+        const newScale = Math.min(5, Math.max(1, viewerPinchStart.scale * (dist / viewerPinchStart.dist)));
+        viewerZoomAround((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, newScale);
+      } else if (viewerPointers.size === 1 && viewerState.scale > 1) {
+        viewerState.tx += e.clientX - prev.x;
+        viewerState.ty += e.clientY - prev.y;
+        applyViewerTransform();
+      }
+    });
+    const viewerPointerEnd = (e) => {
+      viewerPointers.delete(e.pointerId);
+      if (viewerPointers.size < 2) viewerPinchStart = null;
+      // ダブルタップ判定: 押下時間250ms未満・移動15px未満のタップが350ms以内に2回
+      if (viewerDownInfo) {
+        const duration = Date.now() - viewerDownInfo.time;
+        const moved = Math.hypot(e.clientX - viewerDownInfo.x, e.clientY - viewerDownInfo.y);
+        viewerDownInfo = null;
+        if (duration < 250 && moved < 15) {
+          const now = Date.now();
+          const isDouble = now - viewerLastTap.time < 350 &&
+            Math.hypot(e.clientX - viewerLastTap.x, e.clientY - viewerLastTap.y) < 40;
+          viewerLastTap = { time: now, x: e.clientX, y: e.clientY };
+          if (isDouble) {
+            viewerLastTap = { time: 0, x: 0, y: 0 };
+            if (viewerState.scale > 1) resetViewerTransform();
+            else viewerZoomAround(e.clientX, e.clientY, 2.5);
+          }
+        }
+      }
+    };
+    viewerEl.addEventListener("pointerup", viewerPointerEnd);
+    viewerEl.addEventListener("pointercancel", viewerPointerEnd);
+  }
 
   // 月フィルタ
   $("month-filter").addEventListener("change", renderList);
