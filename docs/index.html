@@ -499,7 +499,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.2 当たり判定を拡大";
+const APP_VERSION = "2026-07-08.3 画像の表示サイズ調整";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1111,8 +1111,8 @@ function renderCropEditor() {
   // レイアウト確定前に呼ばれた場合（hidden解除直後など）は次フレームで再試行する
   if (editorW === 0) { requestAnimationFrame(renderCropEditor); return; }
   // 縦長の写真でもスクロールせずに全体と操作ボタンが見えるよう、
-  // カード幅×画面高さの約半分のボックスに収まるサイズで表示する
-  const maxH = Math.round(window.innerHeight * 0.5);
+  // カード幅×画面高さの約65%のボックスに収まるサイズで表示する
+  const maxH = Math.round(window.innerHeight * 0.65);
   const fit = Math.min(editorW / cropPreviewCanvas.width, maxH / cropPreviewCanvas.height);
   const cssW = Math.round(cropPreviewCanvas.width * fit);
   const cssH = Math.round(cropPreviewCanvas.height * fit);
