@@ -143,18 +143,12 @@
     color: var(--danger);
     font-weight: 500;
   }
-  button.edit-ghost { background: transparent; border: none; color: var(--accent-soft); width: auto; padding: 6px 10px 6px 6px; font-size: 13px; margin: 0; }
-  button.share-ghost {
+  button.share-block {
     background: rgba(124, 58, 237, 0.15);
     border: 1px solid var(--border);
     color: var(--accent-soft);
-    width: auto;
-    padding: 6px 10px;
-    font-size: 13px;
-    margin: 0;
-    border-radius: 8px;
+    font-weight: 600;
   }
-  .receipt-item .row-buttons { display: flex; gap: 4px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
   .file-button {
     display: flex;
@@ -317,6 +311,8 @@
       </label>
       <button id="save-btn">保存</button>
       <button id="cancel-btn" class="ghost">キャンセル</button>
+      <button id="share-btn" class="share-block hidden">申請</button>
+      <button id="save-image-btn" class="ghost hidden">画像保存</button>
       <button id="delete-btn" class="danger-ghost-block hidden">この明細を削除</button>
     </div>
   </section>
@@ -477,10 +473,12 @@ function showToast(message) {
   showToast._timer = setTimeout(() => toast.classList.remove("show"), 3200);
 }
 
-async function shareReceipt(r) {
+// preFetchedBlobを渡すとgetImage()での再取得を省略する（編集画面はstartEdit()で
+// 取得済みのeditImageBlobをそのまま渡す）
+async function shareReceipt(r, preFetchedBlob) {
   const { subject, body } = buildShareText(r);
   const hasImage = r.filename && r.filename !== "(手入力)";
-  const blob = hasImage ? await getImage(r.id).catch(() => null) : null;
+  const blob = preFetchedBlob !== undefined ? preFetchedBlob : (hasImage ? await getImage(r.id).catch(() => null) : null);
 
   // 共有先アプリが本文・添付を正しく展開しないことがある（例: 一部メールクライアントの
   // Web共有ターゲット実装の不具合）ため、常に先に本文をクリップボードへコピーしておき、
@@ -789,8 +787,10 @@ function showMessage(kind, text) {
 
 function openForm(data, title) {
   $("form-title").textContent = title ?? "内容を確認・修正";
-  // 削除ボタンは既存明細の編集時のみ表示する（新規撮影・手入力では表示しない）
+  // 削除・申請ボタンは既存明細の編集時のみ表示する（新規撮影・手入力では表示しない。
+  // 画像保存はstartEdit()側で画像の有無を確認した後に表示切り替えする）
   $("delete-btn").classList.toggle("hidden", editingId === null);
+  $("share-btn").classList.toggle("hidden", editingId === null);
   $("f-date").value = data.date;
   $("f-vendor").value = data.vendor;
   $("f-amount").value = formatAmountForInput(data.amount);
@@ -810,7 +810,8 @@ function openForm(data, title) {
 let currentImage = null;
 let editingId = null;
 let editPreviewUrl = null; // 編集画面で表示中の証憑画像のobject URL（閉じる時に必ず解放する）
-let editImageBlob = null; // startEdit時に取得済みの証憑画像（トグル表示時に再取得しない）
+let editImageBlob = null; // startEdit時に取得済みの証憑画像（トグル表示・画像保存・申請で再取得しない）
+let editImageFilename = ""; // 編集中の明細に紐づく証憑画像のファイル名
 
 function resetImageToggle() {
   $("image-toggle-wrap").classList.add("hidden");
@@ -822,6 +823,8 @@ function resetImageToggle() {
     editPreviewUrl = null;
   }
   editImageBlob = null;
+  editImageFilename = "";
+  $("save-image-btn").classList.add("hidden");
 }
 
 function closeForm() {
@@ -835,7 +838,7 @@ function closeForm() {
   resetImageToggle();
 }
 
-// 一覧から既存明細の編集を開始する。証憑画像があれば「表示」トグルを出す
+// 一覧から既存明細の編集を開始する。証憑画像があれば「表示」「画像保存」を出す
 async function startEdit(r) {
   currentImage = null;
   editingId = r.id;
@@ -846,8 +849,26 @@ async function startEdit(r) {
   const hasImage = r.filename && r.filename !== "(手入力)";
   if (hasImage) {
     editImageBlob = await getImage(r.id).catch(() => null);
-    if (editImageBlob) $("image-toggle-wrap").classList.remove("hidden");
+    if (editImageBlob) {
+      editImageFilename = r.filename;
+      $("image-toggle-wrap").classList.remove("hidden");
+      $("save-image-btn").classList.remove("hidden");
+    }
   }
+}
+
+// 編集フォームの現在の入力値から明細オブジェクトを組み立てる（申請に使う）
+function getFormReceipt() {
+  return {
+    id: editingId,
+    date: $("f-date").value,
+    vendor: $("f-vendor").value.trim(),
+    amount: parseAmountInput($("f-amount").value),
+    category: $("f-category").value,
+    memo: $("f-memo").value.trim().slice(0, 20),
+    note: $("f-note").value.trim(),
+    filename: editImageFilename || "(手入力)",
+  };
 }
 
 function renderList() {
@@ -882,6 +903,8 @@ function renderList() {
     amount.textContent = "¥" + Number(r.amount).toLocaleString();
     row1.append(title, amount);
 
+    // 申請・画像保存・編集・削除はすべて編集画面に集約したため、一覧の行には
+    // メタ情報のみを表示する（行タップで編集画面を開く）
     const row2 = document.createElement("div");
     row2.className = "row2";
     const meta = document.createElement("span");
@@ -890,39 +913,7 @@ function renderList() {
       ? [r.vendor || "（支払先なし）", r.date || "日付なし", r.category || "科目なし", r.memo]
       : [r.date || "日付なし", r.category || "科目なし", r.memo];
     meta.textContent = metaParts.filter(Boolean).join(" / ");
-    const buttons = document.createElement("span");
-    buttons.className = "row-buttons";
-    const share = document.createElement("button");
-    share.className = "share-ghost";
-    share.textContent = "申請";
-    share.addEventListener("click", async (e) => {
-      e.stopPropagation(); // 行タップ(編集画面遷移)を誘発しないようにする
-      share.disabled = true;
-      try {
-        await shareReceipt(r);
-      } finally {
-        share.disabled = false;
-      }
-    });
-    const hasImageForRow = r.filename && r.filename !== "(手入力)";
-    let saveImage = null;
-    if (hasImageForRow) {
-      // 共有先アプリが添付を正しく展開しない場合の保険として、画像を直接ダウンロードできるようにする
-      saveImage = document.createElement("button");
-      saveImage.className = "edit-ghost save-image-ghost";
-      saveImage.textContent = "画像保存";
-      saveImage.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const blob = await getImage(r.id).catch(() => null);
-        if (!blob) {
-          alert("証憑画像が見つかりませんでした。");
-          return;
-        }
-        downloadBlob(blob, r.filename);
-      });
-    }
-    buttons.append(share, ...(saveImage ? [saveImage] : []));
-    row2.append(meta, buttons);
+    row2.append(meta);
 
     item.append(row1, row2);
     if (r.needs_review) {
@@ -1073,6 +1064,27 @@ document.addEventListener("DOMContentLoaded", () => {
     await deleteImage(idToDelete).catch(() => {});
     closeForm();
     showPanel("list");
+  });
+
+  // 申請（編集画面から）。現在の入力値をもとに共有する
+  $("share-btn").addEventListener("click", async () => {
+    if (!editingId) return;
+    const btn = $("share-btn");
+    btn.disabled = true;
+    try {
+      await shareReceipt(getFormReceipt(), editImageBlob);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 画像保存（編集画面から）。startEdit()で取得済みの画像をそのままダウンロードする
+  $("save-image-btn").addEventListener("click", () => {
+    if (!editImageBlob) {
+      alert("証憑画像が見つかりませんでした。");
+      return;
+    }
+    downloadBlob(editImageBlob, editImageFilename);
   });
 
   // 証憑画像の表示/非表示トグル（編集画面）
