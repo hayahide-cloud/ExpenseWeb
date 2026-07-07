@@ -267,7 +267,7 @@
         <input type="text" id="f-vendor" placeholder="店舗名・会社名">
       </label>
       <label>金額（円）
-        <input type="number" id="f-amount" inputmode="numeric" placeholder="0">
+        <input type="text" id="f-amount" inputmode="numeric" placeholder="0">
       </label>
       <label>勘定科目
         <select id="f-category">
@@ -405,6 +405,16 @@ function makeImageFilename(r) {
   const datePart = (r.date || "\u65e5\u4ed8\u306a\u3057").replaceAll("-", "");
   const vendorPart = sanitize(r.vendor) || "\u652f\u6255\u5148\u306a\u3057";
   return `${datePart}_${vendorPart}_${r.amount}\u5186_${r.id.slice(-4)}.jpg`;
+}
+
+// 金額入力欄はカンマ区切り表示にするためtype="text"で扱う。
+// 内部の値（保存・CSV・API送信）は常にカンマなしの整数であることを、この2関数の境界で保証する。
+function parseAmountInput(value) {
+  return parseInt(String(value).replace(/[^0-9]/g, ""), 10) || 0;
+}
+
+function formatAmountForInput(amount) {
+  return amount ? Number(amount).toLocaleString() : "";
 }
 
 function formatDateTime(iso) {
@@ -653,7 +663,7 @@ function openForm(data, title) {
   $("form-title").textContent = title ?? "内容を確認・修正";
   $("f-date").value = data.date;
   $("f-vendor").value = data.vendor;
-  $("f-amount").value = data.amount;
+  $("f-amount").value = formatAmountForInput(data.amount);
   $("f-category").value = data.category;
   $("f-memo").value = data.memo;
   $("f-note").value = data.note ?? "";
@@ -840,11 +850,16 @@ document.addEventListener("DOMContentLoaded", () => {
     $("memo-count").textContent = String($("f-memo").value.length);
   });
 
+  // 金額入力: 入力のたびにカンマ区切りへ整形する（数字以外は破棄）
+  $("f-amount").addEventListener("input", (e) => {
+    e.target.value = formatAmountForInput(parseAmountInput(e.target.value));
+  });
+
   // 保存（新規作成 or 既存明細の更新）
   $("save-btn").addEventListener("click", async () => {
     const date = $("f-date").value;
     const vendor = $("f-vendor").value.trim();
-    const amount = parseInt($("f-amount").value, 10) || 0;
+    const amount = parseAmountInput($("f-amount").value);
     const category = $("f-category").value;
     const memo = $("f-memo").value.trim().slice(0, 20);
     const note = $("f-note").value.trim();
