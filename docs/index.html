@@ -288,7 +288,10 @@
         📷 タップして撮影 / 画像を選択
         <!-- capture属性を付けるとカメラが強制起動してしまうため付けない。
              iOSでは「フォトライブラリ/写真を撮る/ファイルを選択」の選択メニューが表示される -->
-        <input type="file" id="image-input" accept="image/*">
+        <!-- accept="image/*"のみだとiOSの選択シートが「写真ライブラリ/写真を撮る/ファイルを選択」の
+             順になる。video/*も含めることで「写真を撮る/写真またはビデオを選択/ファイルを選択」の
+             順になる（iOS側の仕様）。動画はOCR解析できないため、選択時にJS側で弾く -->
+        <input type="file" id="image-input" accept="image/*,video/*">
       </label>
       <img id="preview" alt="領収書プレビュー">
       <button id="analyze-btn" disabled>解析する</button>
@@ -1082,10 +1085,18 @@ document.addEventListener("DOMContentLoaded", () => {
     b.addEventListener("click", () => showPanel(b.dataset.panel));
   });
 
-  // 画像選択
+  // 画像選択（iOSの選択シートの並びをvideo/*も動画も選択できるようにしているが、
+  // OCR解析は画像のみ対応のため動画が選ばれた場合はここで弾く）
   $("image-input").addEventListener("change", () => {
     const file = $("image-input").files[0];
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      $("image-input").value = "";
+      $("preview").style.display = "none";
+      $("analyze-btn").disabled = true;
+      showMessage("error", "動画は取り込めません。写真を選択してください。");
+      return;
+    }
     $("preview").src = URL.createObjectURL(file);
     $("preview").style.display = "block";
     $("analyze-btn").disabled = false;
