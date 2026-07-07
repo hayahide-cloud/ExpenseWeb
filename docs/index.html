@@ -216,6 +216,13 @@
   .file-button input { display: none; }
   /* 手動トリミングエディタ: 画像の上に四隅のドラッグハンドルを重ねる */
   #crop-editor { margin-top: 12px; }
+  #crop-hint {
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 10px;
+    letter-spacing: 0.03em;
+  }
   /* touch-action:noneで画像上のタッチによるスクロール・引っ張って更新を無効化。
      user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ。
      幅はキャンバス（＝画像の表示サイズ）に合わせて中央寄せする */
@@ -426,8 +433,7 @@
           <div class="crop-handle" data-corner="3"></div>
           <canvas id="crop-loupe" class="hidden"></canvas>
         </div>
-        <p class="note">🔲 四隅の丸をドラッグして領収書の角に合わせてください。
-          傾いていても解析時にまっすぐ補正されます。</p>
+        <p id="crop-hint">四隅を領収書の角に合わせてください ─ 傾きは自動で補正されます</p>
       </div>
       <button id="analyze-btn" disabled>解析する</button>
       <!-- 写真選択後の取り消し用。これが無いと選んだ写真を破棄する手段がない -->
@@ -571,7 +577,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.7 証憑画像のピンチ拡大";
+const APP_VERSION = "2026-07-08.8 トリミング画面の整理";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1225,6 +1231,7 @@ function resetCropEditor() {
   $("crop-editor").classList.add("hidden");
   $("crop-loupe").classList.add("hidden");
   $("crop-cancel-btn").classList.add("hidden");
+  $("manual-btn").classList.remove("hidden"); // 写真選択中だけ隠している手入力ボタンを戻す
   cropSourceCanvas = null;
   cropPreviewCanvas = null;
   cropQuad = null;
@@ -1469,6 +1476,7 @@ async function restoreCropDraftIfAny() {
     cropQuad = detectInitialQuad(cropPreviewCanvas);
     $("crop-editor").classList.remove("hidden");
     $("crop-cancel-btn").classList.remove("hidden");
+    $("manual-btn").classList.add("hidden");
     renderCropEditor();
     $("analyze-btn").disabled = false;
     showPanel("capture");
@@ -1685,6 +1693,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       cropQuad = detectInitialQuad(cropPreviewCanvas);
       $("crop-editor").classList.remove("hidden");
       $("crop-cancel-btn").classList.remove("hidden");
+      $("manual-btn").classList.add("hidden");
       renderCropEditor();
       $("analyze-btn").disabled = false;
       showMessage("", "");
