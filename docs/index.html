@@ -196,6 +196,9 @@
   .file-button input { display: none; }
   #preview { max-width: 100%; border-radius: 12px; margin-top: 12px; display: none; border: 1px solid var(--border); }
   #image-toggle-wrap { margin-bottom: 16px; }
+  #split-calc { margin-bottom: 16px; }
+  #split-panel { margin-top: 8px; }
+  #split-result { margin-top: 8px; font-size: 14px; color: var(--accent-soft); }
   #edit-preview { max-width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--border); }
 
   .banner {
@@ -333,6 +336,15 @@
       <label>金額（円）
         <input type="text" id="f-amount" inputmode="numeric" placeholder="0">
       </label>
+      <div id="split-calc">
+        <button type="button" id="split-toggle-btn" class="ghost">👥 按分計算</button>
+        <div id="split-panel" class="hidden">
+          <label>人数
+            <input type="number" id="split-people" inputmode="numeric" min="1" placeholder="例: 5">
+          </label>
+          <p id="split-result" class="note"></p>
+        </div>
+      </div>
       <label>勘定科目
         <select id="f-category">
           <option value="">未選択</option>
@@ -964,6 +976,30 @@ function openForm(data, title) {
   $("review-banner").classList.toggle("hidden", review === "");
   $("capture-step").classList.add("hidden");
   $("form-step").classList.remove("hidden");
+  resetSplitCalc();
+}
+
+// 按分計算（例: 5人の飲み会を立て替えた後、1人あたりの請求額を出す）をリセットする。
+// 端数は切り捨て、余りは立て替えた本人が負担する前提で計算する
+function resetSplitCalc() {
+  $("split-panel").classList.add("hidden");
+  $("split-toggle-btn").textContent = "👥 按分計算";
+  $("split-people").value = "";
+  $("split-result").textContent = "";
+}
+
+function updateSplitResult() {
+  const total = parseAmountInput($("f-amount").value);
+  const people = parseInt($("split-people").value, 10);
+  if (!total || !people || people < 1) {
+    $("split-result").textContent = "";
+    return;
+  }
+  const perPerson = Math.floor(total / people);
+  const remainder = total - perPerson * people;
+  $("split-result").textContent =
+    `1人あたり ¥${perPerson.toLocaleString()}` +
+    (remainder > 0 ? `（端数¥${remainder.toLocaleString()}は自分持ち）` : "");
 }
 
 // 解析中の証憑画像と編集対象ID。フォームを閉じる時に必ずリセットする
@@ -1168,7 +1204,17 @@ document.addEventListener("DOMContentLoaded", () => {
   // 金額入力: 入力のたびにカンマ区切りへ整形する（数字以外は破棄）
   $("f-amount").addEventListener("input", (e) => {
     e.target.value = formatAmountForInput(parseAmountInput(e.target.value));
+    updateSplitResult();
   });
+
+  // 按分計算の開閉と人数入力
+  $("split-toggle-btn").addEventListener("click", () => {
+    const opening = $("split-panel").classList.contains("hidden");
+    $("split-panel").classList.toggle("hidden", !opening);
+    $("split-toggle-btn").textContent = opening ? "👥 按分計算を閉じる" : "👥 按分計算";
+    if (opening) $("split-people").focus();
+  });
+  $("split-people").addEventListener("input", updateSplitResult);
 
   // 保存（新規作成 or 既存明細の更新）
   $("save-btn").addEventListener("click", async () => {
