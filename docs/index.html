@@ -325,7 +325,7 @@
       <button id="save-btn">保存</button>
       <div class="action-row">
         <button id="share-btn" class="action-btn hidden">📤 申請</button>
-        <button id="save-image-btn" class="action-btn hidden">💾 画像保存</button>
+        <button id="save-image-btn" class="action-btn hidden">💾 証憑画像を保存</button>
       </div>
       <button id="cancel-btn" class="text-link">キャンセル</button>
       <button id="delete-btn" class="text-link danger hidden">この明細を削除</button>
@@ -528,7 +528,7 @@ async function shareReceipt(r, preFetchedBlob) {
 
   // フォールバック: mailto:（画像は添付できないため手動添付が必要な旨を案内する）
   if (hasImage) {
-    alert("この端末はファイル共有に対応していないため、画像は自動添付できません。\nメールを開くので、画像は別途手動で添付してください（「画像保存」ボタンでダウンロードできます）。");
+    alert("この端末はファイル共有に対応していないため、画像は自動添付できません。\nメールを開くので、画像は別途手動で添付してください（「証憑画像を保存」ボタンでダウンロードできます）。");
   }
   const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   window.location.href = mailto;
