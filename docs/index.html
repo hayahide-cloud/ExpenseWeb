@@ -439,6 +439,9 @@ const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "
 const STORAGE_KEY = "expenseweb_lite_receipts";
 const SETTINGS_KEY = "expenseweb_lite_settings";
 const ACTIVE_PANEL_KEY = "expenseweb_lite_active_panel";
+const ACTIVE_EDIT_KEY = "expenseweb_lite_active_edit_id";
+const DRAFT_KEY = "expenseweb_lite_draft";
+const DRAFT_IMAGE_ID = "__draft__";
 const DEFAULT_MODEL = "gpt-5.4";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
@@ -1049,12 +1052,81 @@ function closeForm() {
   currentImage = null;
   editingId = null;
   resetImageToggle();
+  localStorage.removeItem(ACTIVE_EDIT_KEY);
+  clearDraft();
+}
+
+// 保存前の入力内容（OCR結果 or 手入力途中）を下書きとしてlocalStorage/IndexedDBに保持し、
+// 画面更新（誤操作やiOSのタブ再読み込み）でOCR結果や入力内容が失われないようにする。
+// 既存明細の編集中(editingId設定時)は「明細を編集」側の復元(ACTIVE_EDIT_KEY)に任せる
+function saveDraft() {
+  if (editingId !== null) return;
+  const draft = {
+    date: $("f-date").value,
+    vendor: $("f-vendor").value,
+    amount: $("f-amount").value,
+    category: $("f-category").value,
+    memo: $("f-memo").value,
+    note: $("f-note").value,
+    hasImage: !!currentImage,
+  };
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+}
+
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+  deleteImage(DRAFT_IMAGE_ID).catch(() => {});
+}
+
+// 画面更新前に編集していた既存明細があれば再度開く。ACTIVE_EDIT_KEYが指す明細が
+// 既に削除済み等で見つからない場合は諦める（下書き・タブ復元へフォールバック）
+async function restoreActiveEditIfAny() {
+  const id = localStorage.getItem(ACTIVE_EDIT_KEY);
+  if (!id) return false;
+  const row = loadReceipts().find((x) => x.id === id);
+  if (!row) {
+    localStorage.removeItem(ACTIVE_EDIT_KEY);
+    return false;
+  }
+  await startEdit(row);
+  showMessage("ok", "画面更新前に編集していた明細を再度開きました。");
+  return true;
+}
+
+// 画面更新前の保存前入力（下書き）があれば復元する。証憑画像はIndexedDBの下書き専用IDから取得する
+async function restoreDraftIfAny() {
+  const draftJson = localStorage.getItem(DRAFT_KEY);
+  if (!draftJson) return false;
+  let draft;
+  try {
+    draft = JSON.parse(draftJson);
+  } catch {
+    localStorage.removeItem(DRAFT_KEY);
+    return false;
+  }
+  editingId = null;
+  openForm({
+    date: draft.date, vendor: draft.vendor, amount: parseAmountInput(draft.amount),
+    category: draft.category, memo: draft.memo, note: draft.note,
+  });
+  showPanel("capture");
+  if (draft.hasImage) {
+    currentImage = await getImage(DRAFT_IMAGE_ID).catch(() => null);
+    if (currentImage) {
+      resetImageToggle();
+      editImageBlob = currentImage;
+      $("image-toggle-wrap").classList.remove("hidden");
+    }
+  }
+  showMessage("ok", "画面更新前の入力内容を復元しました。");
+  return true;
 }
 
 // 一覧から既存明細の編集を開始する。証憑画像があれば「表示」「画像保存」を出す
 async function startEdit(r) {
   currentImage = null;
   editingId = r.id;
+  localStorage.setItem(ACTIVE_EDIT_KEY, r.id);
   openForm(r, "明細を編集");
   showPanel("capture");
 
@@ -1155,7 +1227,7 @@ function renderList() {
 }
 
 // ===== イベント登録 =====
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   // 勘定科目セレクトを構築
   for (const c of CATEGORIES) {
     const opt = document.createElement("option");
@@ -1176,11 +1248,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("nav button").forEach((b) => {
     b.addEventListener("click", () => showPanel(b.dataset.panel));
   });
-
-  // 画面更新前に開いていたタブを復元する（未保存なら既定の「取込」タブのまま）
-  const validPanels = ["capture", "list", "settings"];
-  const lastPanel = localStorage.getItem(ACTIVE_PANEL_KEY);
-  if (validPanels.includes(lastPanel)) showPanel(lastPanel);
 
   // 画像選択（iOSの選択シートの並びをvideo/*も動画も選択できるようにしているが、
   // OCR解析は画像のみ対応のため動画が選ばれた場合はここで弾く）
@@ -1220,6 +1287,9 @@ document.addEventListener("DOMContentLoaded", () => {
       editImageBlob = currentImage;
       $("image-toggle-wrap").classList.remove("hidden");
       showMessage("", "");
+      // OCR結果を下書きとして保持する（画面更新でAPI呼び出し分の結果が失われないように）
+      saveDraft();
+      await putImage(DRAFT_IMAGE_ID, currentImage).catch(() => {});
     } catch (err) {
       showMessage("error", err.message + "（手入力でも追加できます）");
     } finally {
@@ -1233,7 +1303,13 @@ document.addEventListener("DOMContentLoaded", () => {
     currentImage = null;
     editingId = null;
     openForm({ date: "", vendor: "", amount: 0, category: "", memo: "" });
+    saveDraft();
   });
+
+  // 保存前の新規入力中は、フィールドの変更のたびに下書きを更新する
+  // （既存明細の編集中はsaveDraft()内でno-opになる）
+  $("form-step").addEventListener("input", () => saveDraft());
+  $("form-step").addEventListener("change", () => saveDraft());
 
   // 摘要の文字数カウンタ
   $("f-memo").addEventListener("input", () => {
@@ -1449,6 +1525,18 @@ document.addEventListener("DOMContentLoaded", () => {
     renderList();
     alert("削除しました。");
   });
+
+  // 画面更新前の状態を復元する（すべてのボタンの配線が終わった後に行う）。
+  // 優先順位: 編集中だった既存明細 > 保存前の下書き > 最後に開いていたタブ
+  const restoredEdit = await restoreActiveEditIfAny();
+  if (!restoredEdit) {
+    const restoredDraft = await restoreDraftIfAny();
+    if (!restoredDraft) {
+      const validPanels = ["capture", "list", "settings"];
+      const lastPanel = localStorage.getItem(ACTIVE_PANEL_KEY);
+      if (validPanels.includes(lastPanel)) showPanel(lastPanel);
+    }
+  }
 });
 </script>
 </body>
