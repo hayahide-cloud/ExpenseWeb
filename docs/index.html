@@ -384,6 +384,8 @@
           傾いていても解析時にまっすぐ補正されます。</p>
       </div>
       <button id="analyze-btn" disabled>解析する</button>
+      <!-- 写真選択後の取り消し用。これが無いと選んだ写真を破棄する手段がない -->
+      <button id="crop-cancel-btn" class="ghost hidden">キャンセル</button>
       <button id="manual-btn" class="ghost">手入力で追加</button>
     </div>
 
@@ -516,7 +518,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.4 デザイン刷新";
+const APP_VERSION = "2026-07-08.5 写真選択のキャンセル";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1169,6 +1171,7 @@ function renderCropEditor() {
 function resetCropEditor() {
   $("crop-editor").classList.add("hidden");
   $("crop-loupe").classList.add("hidden");
+  $("crop-cancel-btn").classList.add("hidden");
   cropSourceCanvas = null;
   cropPreviewCanvas = null;
   cropQuad = null;
@@ -1412,6 +1415,7 @@ async function restoreCropDraftIfAny() {
     cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
     cropQuad = detectInitialQuad(cropPreviewCanvas);
     $("crop-editor").classList.remove("hidden");
+    $("crop-cancel-btn").classList.remove("hidden");
     renderCropEditor();
     $("analyze-btn").disabled = false;
     showPanel("capture");
@@ -1573,6 +1577,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 四隅の初期検出は縮小版で行う（結果は正規化座標なので元画像にそのまま使える）
       cropQuad = detectInitialQuad(cropPreviewCanvas);
       $("crop-editor").classList.remove("hidden");
+      $("crop-cancel-btn").classList.remove("hidden");
       renderCropEditor();
       $("analyze-btn").disabled = false;
       showMessage("", "");
@@ -1582,9 +1587,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  // 写真選択のキャンセル。選んだ写真とその下書きを破棄して選択前の状態に戻す
+  $("crop-cancel-btn").addEventListener("click", () => {
+    resetCropEditor();
+    $("image-input").value = "";
+    $("analyze-btn").disabled = true;
+    deleteImage(CROP_DRAFT_IMAGE_ID).catch(() => {});
+    showMessage("", "");
+  });
+
   // トリミングエディタ: ドラッグ操作（タッチ・マウス共通のPointer Events）。
   // ハンドルの円そのものではなく、ステージ上のタッチ位置から最も近い角を掴む方式に
-  // している（半径80px以内）。小さい円を正確に押さえる必要がなく、誤タップが減る。
+  // している（半径120px以内）。小さい円を正確に押さえる必要がなく、誤タップが減る。
   // ドラッグ中は指で角が隠れるため、拡大鏡で角の周辺を表示する
   {
     const stageEl = $("crop-stage");
