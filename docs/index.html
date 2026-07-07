@@ -499,7 +499,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.1 画像の表示サイズ縮小・拡大鏡1.5倍";
+const APP_VERSION = "2026-07-08.2 当たり判定を拡大";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1571,7 +1571,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ドラッグ中は指で角が隠れるため、拡大鏡で角の周辺を表示する
   {
     const stageEl = $("crop-stage");
-    const GRAB_RADIUS = 80; // この距離(px)以内に角があれば掴む
+    const GRAB_RADIUS = 120; // この距離(px)以内に角があれば掴む
     let draggingCorner = null;
 
     stageEl.addEventListener("pointerdown", (e) => {
