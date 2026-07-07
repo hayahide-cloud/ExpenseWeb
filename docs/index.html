@@ -158,6 +158,8 @@
   }
   .file-button input { display: none; }
   #preview { max-width: 100%; border-radius: 12px; margin-top: 12px; display: none; border: 1px solid var(--border); }
+  #image-toggle-wrap { margin-bottom: 16px; }
+  #edit-preview { max-width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--border); }
 
   .banner {
     padding: 10px 12px;
@@ -254,6 +256,10 @@
     <div id="form-step" class="card hidden">
       <h2 id="form-title">内容を確認・修正</h2>
       <div id="review-banner" class="banner warn hidden"></div>
+      <div id="image-toggle-wrap" class="hidden">
+        <button type="button" id="toggle-image-btn" class="ghost">📷 証憑画像を表示</button>
+        <img id="edit-preview" alt="証憑画像" class="hidden">
+      </div>
       <label>日付
         <input type="date" id="f-date">
       </label>
@@ -663,6 +669,20 @@ function openForm(data, title) {
 // （キャンセルした撮影画像が、次の編集保存時に誤って添付されるのを防ぐ）
 let currentImage = null;
 let editingId = null;
+let editPreviewUrl = null; // 編集画面で表示中の証憑画像のobject URL（閉じる時に必ず解放する）
+let editImageBlob = null; // startEdit時に取得済みの証憑画像（トグル表示時に再取得しない）
+
+function resetImageToggle() {
+  $("image-toggle-wrap").classList.add("hidden");
+  $("edit-preview").classList.add("hidden");
+  $("edit-preview").src = "";
+  $("toggle-image-btn").textContent = "📷 証憑画像を表示";
+  if (editPreviewUrl) {
+    URL.revokeObjectURL(editPreviewUrl);
+    editPreviewUrl = null;
+  }
+  editImageBlob = null;
+}
 
 function closeForm() {
   $("form-step").classList.add("hidden");
@@ -672,14 +692,22 @@ function closeForm() {
   $("analyze-btn").disabled = true;
   currentImage = null;
   editingId = null;
+  resetImageToggle();
 }
 
-// 一覧から既存明細の編集を開始する
-function startEdit(r) {
+// 一覧から既存明細の編集を開始する。証憑画像があれば「表示」トグルを出す
+async function startEdit(r) {
   currentImage = null;
   editingId = r.id;
   openForm(r, "明細を編集");
   showPanel("capture");
+
+  resetImageToggle();
+  const hasImage = r.filename && r.filename !== "(手入力)";
+  if (hasImage) {
+    editImageBlob = await getImage(r.id).catch(() => null);
+    if (editImageBlob) $("image-toggle-wrap").classList.remove("hidden");
+  }
 }
 
 function renderList() {
@@ -865,6 +893,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // キャンセル
   $("cancel-btn").addEventListener("click", closeForm);
+
+  // 証憑画像の表示/非表示トグル（編集画面）
+  $("toggle-image-btn").addEventListener("click", () => {
+    const img = $("edit-preview");
+    const showing = !img.classList.contains("hidden");
+    if (showing) {
+      img.classList.add("hidden");
+      $("toggle-image-btn").textContent = "📷 証憑画像を表示";
+      return;
+    }
+    if (!editPreviewUrl && editImageBlob) {
+      editPreviewUrl = URL.createObjectURL(editImageBlob);
+    }
+    img.src = editPreviewUrl;
+    img.classList.remove("hidden");
+    $("toggle-image-btn").textContent = "📷 証憑画像を隠す";
+  });
 
   // 月フィルタ
   $("month-filter").addEventListener("change", renderList);
