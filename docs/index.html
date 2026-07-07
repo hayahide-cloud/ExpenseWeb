@@ -1106,6 +1106,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = await analyzeImage(dataUrl);
       editingId = null;
       openForm(result);
+      // 保存前でも証憑画像の表示/非表示トグルを使えるようにする（画像保存ボタンは
+      // 保存後の明細にのみ出す仕様のためここでは表示しない）
+      resetImageToggle();
+      editImageBlob = currentImage;
+      $("image-toggle-wrap").classList.remove("hidden");
       showMessage("", "");
     } catch (err) {
       showMessage("error", err.message + "（手入力でも追加できます）");
