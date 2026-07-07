@@ -302,6 +302,9 @@
         <button type="button" id="toggle-image-btn" class="ghost">📷 証憑画像を表示</button>
         <img id="edit-preview" alt="証憑画像" class="hidden">
       </div>
+      <label>依頼内容・用途
+        <textarea id="f-note" rows="2" placeholder="例: 7月定例会議の会食、○○案件の打合せ"></textarea>
+      </label>
       <label>日付
         <input type="date" id="f-date">
       </label>
@@ -318,9 +321,6 @@
       </label>
       <label>摘要 <span class="char-counter"><span id="memo-count">0</span>/20</span>
         <input type="text" id="f-memo" maxlength="20" placeholder="購入品目の要約">
-      </label>
-      <label>依頼内容・用途
-        <textarea id="f-note" rows="2" placeholder="例: 7月定例会議の会食、○○案件の打合せ"></textarea>
       </label>
       <button id="save-btn">保存</button>
       <div class="action-row">
@@ -904,15 +904,13 @@ function renderList() {
     // ボタン操作が誤って編集画面遷移も引き起こさないようにする
     item.addEventListener("click", () => startEdit(r));
 
-    // 整理用メモ（備考）がある場合はそれを主見出しにし、支払先はメタ情報側へ回す。
-    // 備考は「何の会議・案件か」で一覧を見返す用途のため、支払先より優先度が高い
-    const hasNote = Boolean(r.note);
-
+    // 依頼内容・用途（備考）は「何の会議・案件か」を最優先で見返す用途のフィールドのため、
+    // 未記入でも「未設定」と明示して常に主見出しに置く。支払先はメタ情報側へ回す
     const row1 = document.createElement("div");
     row1.className = "row1";
     const title = document.createElement("span");
     title.className = "vendor";
-    title.textContent = hasNote ? "📎 " + r.note : (r.vendor || "（支払先なし）");
+    title.textContent = "📎 " + (r.note || "未設定");
     const amount = document.createElement("span");
     amount.className = "amount";
     amount.textContent = "¥" + Number(r.amount).toLocaleString();
@@ -924,9 +922,7 @@ function renderList() {
     row2.className = "row2";
     const meta = document.createElement("span");
     meta.className = "meta";
-    const metaParts = hasNote
-      ? [r.vendor || "（支払先なし）", r.date || "日付なし", r.category || "科目なし", r.memo]
-      : [r.date || "日付なし", r.category || "科目なし", r.memo];
+    const metaParts = [r.vendor || "（支払先なし）", r.date || "日付なし", r.category || "科目なし", r.memo];
     meta.textContent = metaParts.filter(Boolean).join(" / ");
     row2.append(meta);
 
