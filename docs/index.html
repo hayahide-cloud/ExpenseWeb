@@ -503,6 +503,7 @@ function buildShareText(r) {
     `勘定科目: ${r.category || "（未入力）"}`,
     `摘要: ${r.memo || "（未入力）"}`,
     r.note ? `備考: ${r.note}` : null,
+    r.split_people ? `按分: ${r.split_people}人で ¥${Math.floor(Number(r.amount) / r.split_people).toLocaleString()}/人` : null,
   ].filter((line) => line !== null).join("\n");
   return { subject, body };
 }
@@ -1075,6 +1076,9 @@ function getFormReceipt() {
     memo: $("f-memo").value.trim().slice(0, 20),
     note: $("f-note").value.trim(),
     filename: editImageFilename || "(手入力)",
+    split_people: $("split-panel").classList.contains("hidden")
+      ? null
+      : (parseInt($("split-people").value, 10) || null),
   };
 }
 
