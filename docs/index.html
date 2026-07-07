@@ -2,7 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- アプリとして使うためズームを無効化（誤ピンチ・誤ダブルタップで画面が崩れるのを防ぐ） -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>ExpenseWeb Lite</title>
 <meta name="description" content="領収書を撮影してOCR取込するサーバーレス経費精算ツール">
 <link rel="manifest" href="manifest.json">
@@ -28,7 +29,8 @@
     --danger: #f87171;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { -webkit-text-size-adjust: 100%; }
+  /* touch-action:manipulationでダブルタップズームを無効化（タップの反応も速くなる） */
+  html { -webkit-text-size-adjust: 100%; touch-action: manipulation; }
   body {
     /* 画面上部にほのかな紫のグローを敷く */
     background:
@@ -518,7 +520,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.5 写真選択のキャンセル";
+const APP_VERSION = "2026-07-08.6 ズーム無効化";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1532,6 +1534,11 @@ function renderList() {
 }
 
 // ===== イベント登録 =====
+// iOS Safariはviewportのuser-scalable=noを無視してピンチズームできてしまうため、
+// Safari独自のジェスチャーイベントを止めて確実にズームを無効化する
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+document.addEventListener("gesturechange", (e) => e.preventDefault());
+
 document.addEventListener("DOMContentLoaded", async () => {
   // 勘定科目セレクトを構築
   for (const c of CATEGORIES) {
