@@ -238,8 +238,37 @@
     background: rgba(124, 58, 237, 0.08);
   }
   .file-button input { display: none; }
-  /* 手動トリミングエディタ: 画像の上に四隅のドラッグハンドルを重ねる */
-  #crop-editor { margin-top: 12px; }
+  /* 手動トリミングエディタ（全画面の画像編集フェーズ）:
+     写真選択中はbodyにcrop-fullscreenクラスを付け、ヘッダー・main・ナビを隠して
+     このエディタだけを表示する。position:fixedは使わず、アプリシェル（bodyのflex列）の
+     唯一の可視子要素として全画面を占めるため、iOSのfixed浮き問題の影響を受けない */
+  #crop-editor {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 14px calc(12px + env(safe-area-inset-bottom));
+  }
+  body.crop-fullscreen header,
+  body.crop-fullscreen main,
+  body.crop-fullscreen nav { display: none; }
+  /* 画像の置き場。残りの縦幅すべてを使い、画像はこの中に完全に収まるサイズで中央表示する。
+     このフェーズにはスクロールが存在しないため、タッチ操作は全て無効化してよい
+     （誤操作の引っ張り更新・スクロールを完全に防ぐ） */
+  #crop-stage-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  #crop-bottom { flex: none; }
+  #crop-actions { display: flex; gap: 10px; margin-top: 12px; }
+  #crop-actions button { margin-top: 0; }
+  #crop-cancel-btn { flex: 1; }
+  #analyze-btn { flex: 2; }
+  #crop-message { margin-top: 10px; }
   #crop-hint {
     text-align: center;
     font-size: 11.5px;
@@ -271,16 +300,15 @@
     margin: 0;
     accent-color: var(--accent-strong);
   }
-  /* 画像上のタッチは縦スクロールとして通す(pan-y)。ホーム画面アプリでは画面内タッチが
-     唯一のスクロール手段のため、完全に無効化すると下の解析ボタンへ到達できなくなる。
-     ドラッグの当たり判定はハンドル要素側(touch-action:none)に限定する。
-     user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ。
-     幅はキャンバス（＝画像の表示サイズ）に合わせて中央寄せする */
+  /* 全画面編集フェーズにはスクロールが無く解析ボタンも常時見えているため、
+     画像上のタッチは全面的に無効化(touch-action:none)して誤操作を防いでよい
+     （※スクロールが必要な画面での広域touch-action:noneは禁物 — LESSONS_LEARNED参照）。
+     user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ */
   #crop-stage {
     position: relative;
     width: fit-content;
     margin: 0 auto;
-    touch-action: pan-y;
+    touch-action: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
@@ -491,25 +519,6 @@
              順になる（iOS側の仕様）。動画はOCR解析できないため、選択時にJS側で弾く -->
         <input type="file" id="image-input" accept="image/*,video/*">
       </label>
-      <div id="crop-editor" class="hidden">
-        <div id="crop-stage">
-          <canvas id="crop-canvas"></canvas>
-          <div class="crop-handle" data-corner="0"></div>
-          <div class="crop-handle" data-corner="1"></div>
-          <div class="crop-handle" data-corner="2"></div>
-          <div class="crop-handle" data-corner="3"></div>
-          <canvas id="crop-loupe" class="hidden"></canvas>
-        </div>
-        <p id="crop-hint">四隅を領収書の角に合わせてください ─ 傾きは自動で補正されます</p>
-        <!-- 補正のON/OFF。選択は設定として記憶され、次回以降も引き継がれる -->
-        <div id="filter-options">
-          <label class="filter-check"><input type="checkbox" id="opt-shadow" checked>影消去</label>
-          <label class="filter-check"><input type="checkbox" id="opt-contrast" checked>コントラスト補正</label>
-        </div>
-      </div>
-      <button id="analyze-btn" disabled>解析する</button>
-      <!-- 写真選択後の取り消し用。これが無いと選んだ写真を破棄する手段がない -->
-      <button id="crop-cancel-btn" class="ghost hidden">キャンセル</button>
       <button id="manual-btn" class="ghost">手入力で追加</button>
     </div>
 
@@ -615,6 +624,38 @@
   </section>
 </main>
 
+<!-- 全画面の画像編集フェーズ（トリミング・影消去・コントラスト補正）。
+     写真を選択するとヘッダー・ナビを隠してここだけが表示され、編集が終わる
+     （解析 or キャンセル）まで他の操作はできない。画像は画面内に完全に収まる
+     サイズで表示されるためスクロールが存在せず、解析ボタンは常に見えている -->
+<div id="crop-editor" class="hidden">
+  <div id="crop-stage-wrap">
+    <div id="crop-stage">
+      <canvas id="crop-canvas"></canvas>
+      <div class="crop-handle" data-corner="0"></div>
+      <div class="crop-handle" data-corner="1"></div>
+      <div class="crop-handle" data-corner="2"></div>
+      <div class="crop-handle" data-corner="3"></div>
+      <canvas id="crop-loupe" class="hidden"></canvas>
+    </div>
+  </div>
+  <div id="crop-bottom">
+    <p id="crop-hint">四隅を領収書の角に合わせてください ─ 傾きは自動で補正されます</p>
+    <!-- 補正のON/OFF。選択は設定として記憶され、次回以降も引き継がれる -->
+    <div id="filter-options">
+      <label class="filter-check"><input type="checkbox" id="opt-shadow" checked>影消去</label>
+      <label class="filter-check"><input type="checkbox" id="opt-contrast" checked>コントラスト補正</label>
+    </div>
+    <!-- 解析失敗時のエラー表示（全画面中はmain内のメッセージ欄が見えないため専用に持つ） -->
+    <div id="crop-message" class="banner error hidden"></div>
+    <div id="crop-actions">
+      <!-- 写真選択後の取り消し用。これが無いと選んだ写真を破棄する手段がない -->
+      <button id="crop-cancel-btn" class="ghost">キャンセル</button>
+      <button id="analyze-btn">解析する</button>
+    </div>
+  </div>
+</div>
+
 <!-- 証憑画像の拡大ビューア -->
 <div id="image-viewer" class="hidden">
   <img id="viewer-img" alt="証憑画像（拡大表示）">
@@ -646,7 +687,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.41 下部バーの浮き対策（アプリシェル化）";
+const APP_VERSION = "2026-07-08.42 画像編集フェーズを全画面化";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1331,13 +1372,14 @@ function detectInitialQuad(canvas) {
 function renderCropEditor() {
   if (!cropPreviewCanvas || !cropQuad) return;
   const canvas = $("crop-canvas");
-  const editorW = $("crop-editor").clientWidth;
+  // 画像置き場（ボタン等を除いた残りの全領域）に完全に収まるサイズで表示する。
+  // スクロールが発生しないため、解析・キャンセルのボタンは常に見えている
+  const wrap = $("crop-stage-wrap");
+  const availW = wrap.clientWidth;
+  const availH = wrap.clientHeight;
   // レイアウト確定前に呼ばれた場合（hidden解除直後など）は次フレームで再試行する
-  if (editorW === 0) { requestAnimationFrame(renderCropEditor); return; }
-  // 縦長の写真でもスクロールせずに全体と操作ボタンが見えるよう、
-  // カード幅×画面高さの約65%のボックスに収まるサイズで表示する
-  const maxH = Math.round(window.innerHeight * 0.65);
-  const fit = Math.min(editorW / cropPreviewCanvas.width, maxH / cropPreviewCanvas.height);
+  if (availW === 0 || availH === 0) { requestAnimationFrame(renderCropEditor); return; }
+  const fit = Math.min(availW / cropPreviewCanvas.width, availH / cropPreviewCanvas.height);
   const cssW = Math.round(cropPreviewCanvas.width * fit);
   const cssH = Math.round(cropPreviewCanvas.height * fit);
   const dpr = window.devicePixelRatio || 1;
@@ -1373,11 +1415,20 @@ function renderCropEditor() {
   });
 }
 
+// 全画面の編集フェーズを開く。ヘッダー・ナビが隠れ、エディタだけが表示される
+function openCropEditor() {
+  $("crop-editor").classList.remove("hidden");
+  document.body.classList.add("crop-fullscreen");
+  $("crop-message").classList.add("hidden");
+  renderCropEditor();
+}
+
+// 全画面の編集フェーズを閉じ、通常表示（ヘッダー・ナビ）に戻す
 function resetCropEditor() {
   $("crop-editor").classList.add("hidden");
+  document.body.classList.remove("crop-fullscreen");
   $("crop-loupe").classList.add("hidden");
-  $("crop-cancel-btn").classList.add("hidden");
-  $("manual-btn").classList.remove("hidden"); // 写真選択中だけ隠している手入力ボタンを戻す
+  $("crop-message").classList.add("hidden");
   cropSourceCanvas = null;
   cropPreviewCanvas = null;
   cropQuad = null;
@@ -1557,7 +1608,6 @@ function closeForm() {
   $("capture-step").classList.remove("hidden");
   $("image-input").value = "";
   resetCropEditor();
-  $("analyze-btn").disabled = true;
   currentImage = null;
   editingId = null;
   resetImageToggle();
@@ -1641,12 +1691,8 @@ async function restoreCropDraftIfAny() {
     cropSourceCanvas = await loadCanvasFromFile(blob, 3600);
     cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
     cropQuad = detectInitialQuad(cropPreviewCanvas);
-    $("crop-editor").classList.remove("hidden");
-    $("crop-cancel-btn").classList.remove("hidden");
-    $("manual-btn").classList.add("hidden");
-    renderCropEditor();
-    $("analyze-btn").disabled = false;
     showPanel("capture");
+    openCropEditor();
     showMessage("ok", "画面更新前に選択した写真を復元しました。");
     return true;
   } catch {
@@ -1860,11 +1906,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!file.type.startsWith("image/")) {
       $("image-input").value = "";
       resetCropEditor();
-      $("analyze-btn").disabled = true;
       showMessage("error", "動画は取り込めません。写真を選択してください。");
       return;
     }
-    $("analyze-btn").disabled = true;
     try {
       cropSourceCanvas = await loadCanvasFromFile(file, 3600);
       // 選択直後の写真を下書き保存する（誤操作で画面がリロードされても撮り直しにならないように）
@@ -1872,11 +1916,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
       // 四隅の初期検出は縮小版で行う（結果は正規化座標なので元画像にそのまま使える）
       cropQuad = detectInitialQuad(cropPreviewCanvas);
-      $("crop-editor").classList.remove("hidden");
-      $("crop-cancel-btn").classList.remove("hidden");
-      $("manual-btn").classList.add("hidden");
-      renderCropEditor();
-      $("analyze-btn").disabled = false;
+      openCropEditor();
       showMessage("", "");
     } catch (err) {
       resetCropEditor();
@@ -1888,15 +1928,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("crop-cancel-btn").addEventListener("click", () => {
     resetCropEditor();
     $("image-input").value = "";
-    $("analyze-btn").disabled = true;
     deleteImage(CROP_DRAFT_IMAGE_ID).catch(() => {});
     showMessage("", "");
   });
 
   // トリミングエディタ: ドラッグ操作（タッチ・マウス共通のPointer Events）。
-  // 当たり判定は各ハンドルの120px四方（touch-action:none）に限定し、その外側の画像上の
-  // タッチは通常の縦スクロールとして通す。ホーム画面アプリでは画面内タッチが唯一の
-  // スクロール手段のため、画像全面でスクロールを止めると解析ボタンへ到達できなくなる。
+  // 当たり判定は各ハンドルの120px四方に限定する。全画面編集フェーズには
+  // スクロールが存在しないため、ハンドル外のタッチは何も起こさない。
   // ドラッグ中は指で角が隠れるため、拡大鏡で角の周辺を表示する
   document.querySelectorAll(".crop-handle").forEach((el) => {
     const corner = Number(el.dataset.corner);
@@ -1922,17 +1960,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   window.addEventListener("resize", renderCropEditor);
 
-  // 解析。トリミングエディタの四隅で切り抜き・傾き補正した画像をOCRと保存の両方に使う
+  // 解析。トリミングエディタの四隅で切り抜き・傾き補正した画像をOCRと保存の両方に使う。
+  // 成功したら全画面編集フェーズを抜けて確認・修正フォームへ進む
   $("analyze-btn").addEventListener("click", async () => {
     if (!cropSourceCanvas || !cropQuad) return;
     const btn = $("analyze-btn");
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>解析中...';
+    $("crop-message").classList.add("hidden");
     try {
       currentImage = await cropAndEnhance();
       const dataUrl = await blobToDataUrl(currentImage);
       const result = await analyzeImage(dataUrl);
       editingId = null;
+      resetCropEditor();
+      $("image-input").value = "";
       openForm(result);
       // 保存前でも証憑画像の表示/非表示トグルを使えるようにする（画像保存ボタンは
       // 保存後の明細にのみ出す仕様のためここでは表示しない）
@@ -1944,7 +1986,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       saveDraft();
       await putImage(DRAFT_IMAGE_ID, currentImage).catch(() => {});
     } catch (err) {
-      showMessage("error", err.message + "（手入力でも追加できます）");
+      // 失敗時は全画面のまま、エディタ内にエラーを表示する（設定不備・通信エラーの再試行用）
+      $("crop-message").textContent = err.message + "（キャンセルして手入力でも追加できます）";
+      $("crop-message").classList.remove("hidden");
     } finally {
       btn.disabled = false;
       btn.textContent = "解析する";
