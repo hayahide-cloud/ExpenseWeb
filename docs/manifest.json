@@ -1,6 +1,6 @@
 {
   "name": "Shiden Expense",
-  "short_name": "紫電経費",
+  "short_name": "紫電Expense",
   "description": "領収書OCR取込 — サーバーレス経費精算",
   "start_url": "./index.html",
   "scope": "./",
