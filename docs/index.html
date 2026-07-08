@@ -437,7 +437,8 @@
     background: rgba(11, 8, 17, 0.94);
     backdrop-filter: blur(12px);
     border-top: 1px solid var(--border);
-    padding-bottom: env(safe-area-inset-bottom);
+    /* safe-area(ホームバー余白)はやや控えめに取り、バー全体を低く見せる */
+    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - 10px));
   }
   nav button {
     flex: 1;
@@ -445,12 +446,12 @@
     border: none;
     border-radius: 0;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 500;
-    padding: 6px 0 4px;
+    padding: 4px 0 2px;
     margin: 0;
   }
-  nav button .icon { display: block; font-size: 18px; margin-bottom: 1px; }
+  nav button .icon { display: block; font-size: 16px; margin-bottom: 0; }
   nav button.active { color: var(--accent-soft); }
 
   .spinner {
@@ -692,7 +693,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.49 保存メッセージの自動消去・下部バーを狭く";
+const APP_VERSION = "2026-07-08.50 下部バーをさらに狭く";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
