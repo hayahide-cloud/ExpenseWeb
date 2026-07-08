@@ -691,7 +691,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.46 初期ハンドルを内側に・補正の既定をOFFに";
+const APP_VERSION = "2026-07-08.47 初期ハンドルを常に固定の内側位置に（自動検出を廃止）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -995,74 +995,6 @@ function solveUnitSquareToQuad(tl, tr, br, bl) {
   };
 }
 
-// 画像外周を背景（机・床など）とみなしてその輝度を推定し、背景色から一定以上離れた
-// 画素がある行・列を「紙がある範囲」として検出する。文字の有無（内部エッジ）ではなく
-// 背景との色の違いで判定するため、印字がまばらな感熱紙（下部が無地）でも紙全体を検出できる
-function detectContentBounds(imageData) {
-  const { width, height, data } = imageData;
-  const gray = new Float32Array(width * height);
-  for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
-    gray[p] = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-  }
-  const bg = estimateBackgroundLuminance(gray, width, height);
-  const diffThreshold = 20; // 背景との輝度差がこれ以上あれば「紙」の画素とみなす
-  const rowCoverage = new Float32Array(height);
-  const colCoverage = new Float32Array(width);
-  for (let y = 0; y < height; y++) {
-    const base = y * width;
-    let count = 0;
-    for (let x = 0; x < width; x++) if (Math.abs(gray[base + x] - bg) > diffThreshold) count++;
-    rowCoverage[y] = count / width;
-  }
-  for (let x = 0; x < width; x++) {
-    let count = 0;
-    for (let y = 0; y < height; y++) if (Math.abs(gray[y * width + x] - bg) > diffThreshold) count++;
-    colCoverage[x] = count / height;
-  }
-  const coverageThreshold = 0.3; // 行・列の3割以上が背景と異なる色なら「紙がある」とみなす
-  const top = findEdge(rowCoverage, coverageThreshold, 1);
-  const bottom = findEdge(rowCoverage, coverageThreshold, -1);
-  const left = findEdge(colCoverage, coverageThreshold, 1);
-  const right = findEdge(colCoverage, coverageThreshold, -1);
-  if (top === null || bottom === null || left === null || right === null) return null;
-  // 文字の欠落を防ぐため、検出した境界より少し外側まで余白を残す
-  const marginX = Math.round(width * 0.02);
-  const marginY = Math.round(height * 0.02);
-  const safeTop = Math.max(0, top - marginY);
-  const safeBottom = Math.min(height, bottom + marginY);
-  const safeLeft = Math.max(0, left - marginX);
-  const safeRight = Math.min(width, right + marginX);
-  if (safeRight - safeLeft < width * 0.5 || safeBottom - safeTop < height * 0.5) return null;
-  return { left: safeLeft, top: safeTop, right: safeRight, bottom: safeBottom };
-}
-
-// 画像外周の細い帯（背景である可能性が高い部分）から輝度の中央値を取り、背景色の推定値とする
-function estimateBackgroundLuminance(gray, width, height) {
-  const samples = [];
-  const stepX = Math.max(1, Math.floor(width / 100));
-  const stepY = Math.max(1, Math.floor(height / 100));
-  for (let x = 0; x < width; x += stepX) {
-    samples.push(gray[x]);
-    samples.push(gray[(height - 1) * width + x]);
-  }
-  for (let y = 0; y < height; y += stepY) {
-    samples.push(gray[y * width]);
-    samples.push(gray[y * width + (width - 1)]);
-  }
-  samples.sort((a, b) => a - b);
-  return samples[Math.floor(samples.length / 2)];
-}
-
-function findEdge(coverage, threshold, dir) {
-  const n = coverage.length;
-  if (dir === 1) {
-    for (let i = 0; i < n; i++) if (coverage[i] >= threshold) return i;
-  } else {
-    for (let i = n - 1; i >= 0; i--) if (coverage[i] >= threshold) return i + 1;
-  }
-  return null;
-}
-
 // 影消去（照明ムラの除去）。撮影時に紙へ落ちた影で紙面の明るさが不均一になるのを補正する。
 // 「ブロックごとの最大輝度 ≒ そこでの紙の明るさ」とみなして粗い照明マップを作り、
 // 平滑化してから各画素を照明マップで割る（白基準の正規化）。影の部分だけ明るく持ち上がり、
@@ -1334,8 +1266,9 @@ function showMessage(kind, text) {
 
 // ===== 手動トリミング（四隅ドラッグ） =====
 // iOSの「書類をスキャン」風に、画像上の四隅ハンドルをドラッグして切り抜き範囲を指定する。
-// 初期位置は背景検出(detectContentBounds)の結果をヒントとして置くが、最終判断は人間が行う
-// ため、自動検出の誤りで金額等が欠落する事故は起きない
+// 初期位置は常に固定（横15%・縦10%内側）。以前は背景との輝度差による自動検出を
+// 行っていたが、実写では明るい机や床を紙と誤検出して画像端に置かれることが多く、
+// 毎回同じ位置に出る予測可能な動作の方が合わせやすいため廃止した（2026-07-08）
 // 切り抜き元は高解像度(長辺3600px上限)で保持し、長辺1800pxの上限は切り抜き後の出力に
 // 適用する。先に1800pxへ縮小してから切り抜くと、レシート部分の解像度が数百pxまで落ちて
 // 粗くなるため。3600pxはiOS Safariのキャンバス面積上限(約1670万px)に収まる安全値
@@ -1354,24 +1287,14 @@ function downscaleCanvas(src, maxDim) {
   return out;
 }
 
-function detectInitialQuad(canvas) {
-  // 検出できなかった場合の初期位置は、画像の端ではなくはっきり内側に置く
-  // （実写では領収書が中央に写ることが多く、端寄りに置くより合わせる移動量が少ない。
-  //   横15%・縦10%はオーナーの実機フィードバックに合わせた値）
+// 四隅ハンドルの初期位置。常に画像の横15%・縦10%内側の固定位置に置く
+// （値はオーナーの実機フィードバックに合わせたもの。実写では領収書が中央に
+//   写ることが多く、画像端に置くより合わせる移動量が少ない）
+function initialCropQuad() {
   const insetX = 0.15, insetY = 0.10;
-  const full = [
+  return [
     { x: insetX, y: insetY }, { x: 1 - insetX, y: insetY },
     { x: 1 - insetX, y: 1 - insetY }, { x: insetX, y: 1 - insetY },
-  ];
-  if (canvas.width < 20 || canvas.height < 20) return full;
-  const imageData = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
-  const bounds = detectContentBounds(imageData);
-  if (!bounds) return full;
-  return [
-    { x: bounds.left / canvas.width, y: bounds.top / canvas.height },
-    { x: bounds.right / canvas.width, y: bounds.top / canvas.height },
-    { x: bounds.right / canvas.width, y: bounds.bottom / canvas.height },
-    { x: bounds.left / canvas.width, y: bounds.bottom / canvas.height },
   ];
 }
 
@@ -1730,7 +1653,7 @@ async function restoreCropDraftIfAny() {
   try {
     cropSourceCanvas = await loadCanvasFromFile(blob, 3600);
     cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
-    cropQuad = detectInitialQuad(cropPreviewCanvas);
+    cropQuad = initialCropQuad();
     showPanel("capture");
     openCropEditor();
     showMessage("ok", "画面更新前に選択した写真を復元しました。");
@@ -1956,8 +1879,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 選択直後の写真を下書き保存する（誤操作で画面がリロードされても撮り直しにならないように）
       putImage(CROP_DRAFT_IMAGE_ID, file).catch(() => {});
       cropPreviewCanvas = downscaleCanvas(cropSourceCanvas, 1200);
-      // 四隅の初期検出は縮小版で行う（結果は正規化座標なので元画像にそのまま使える）
-      cropQuad = detectInitialQuad(cropPreviewCanvas);
+      cropQuad = initialCropQuad();
       openCropEditor();
       showMessage("", "");
     } catch (err) {
