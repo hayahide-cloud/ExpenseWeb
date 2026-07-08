@@ -515,20 +515,17 @@
         <input type="password" id="s-apikey" placeholder="sk-...">
       </label>
       <label>モデル
-        <input type="text" id="s-model" list="model-list" placeholder="gpt-5.4">
-        <datalist id="model-list">
-          <option value="gpt-5.4">
-          <option value="gpt-5.4-mini">
-          <option value="gpt-4.1-mini">
-          <option value="gpt-4.1">
-          <option value="gpt-4o-mini">
-          <option value="gpt-4o">
-        </datalist>
+        <!-- 実機検証で動作確認できたモデルのみ選択肢に載せる（gpt-5.5はmodel_not_foundで使用不可、
+             gpt-4o系は手書き数字の誤読が多かったため外している） -->
+        <select id="s-model">
+          <option value="gpt-5.4">gpt-5.4（推奨・手書きに強い）</option>
+          <option value="gpt-4.1">gpt-4.1</option>
+          <option value="gpt-4.1-mini">gpt-4.1-mini（安価）</option>
+        </select>
       </label>
       <button id="settings-save-btn">設定を保存</button>
       <p class="note">
-        APIキーはこの端末のブラウザ内(localStorage)にのみ保存され、OpenAI以外には送信されません。
-        モデルIDは必ず小文字で入力してください（例: gpt-5.4）。<br>
+        APIキーはこの端末のブラウザ内(localStorage)にのみ保存され、OpenAI以外には送信されません。<br>
         明細データもこの端末内にのみ保存されます。月次でCSVエクスポートしてください。
       </p>
       <!-- OpenAIはAPIキー経由でクレジット残高を取得する公式APIを提供していないため、
@@ -577,7 +574,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.13 新アイコン";
+const APP_VERSION = "2026-07-08.14 モデル選択をプルダウン化";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1682,6 +1679,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("s-apikey").placeholder = `設定済み（末尾: ...${settings.apiKey.slice(-4)}）変更する場合のみ入力`;
   }
   $("s-model").value = settings.model ?? DEFAULT_MODEL;
+  // 保存済みのモデルが選択肢に無い場合（旧バージョンの自由入力値など）は既定値に戻す
+  if ($("s-model").value === "") $("s-model").value = DEFAULT_MODEL;
   $("version-label").textContent = `バージョン: ${APP_VERSION}`;
 
   // ナビゲーション
