@@ -647,8 +647,8 @@
     <p id="crop-hint">四隅を領収書の角に合わせてください ─ 傾きは自動で補正されます</p>
     <!-- 補正のON/OFF。選択は設定として記憶され、次回以降も引き継がれる -->
     <div id="filter-options">
-      <label class="filter-check"><input type="checkbox" id="opt-shadow" checked>影消去</label>
-      <label class="filter-check"><input type="checkbox" id="opt-contrast" checked>コントラスト補正</label>
+      <label class="filter-check"><input type="checkbox" id="opt-shadow">影消去</label>
+      <label class="filter-check"><input type="checkbox" id="opt-contrast">コントラスト補正</label>
     </div>
     <!-- 解析失敗時のエラー表示（全画面中はmain内のメッセージ欄が見えないため専用に持つ） -->
     <div id="crop-message" class="banner error hidden"></div>
@@ -691,7 +691,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.45 確認画面で証憑画像を既定表示";
+const APP_VERSION = "2026-07-08.46 初期ハンドルを内側に・補正の既定をOFFに";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1355,12 +1355,13 @@ function downscaleCanvas(src, maxDim) {
 }
 
 function detectInitialQuad(canvas) {
-  // 検出できなかった場合の初期位置は、画像の端ちょうどではなく少し内側に置く
-  // （端のハンドルは掴みにくく、たいてい内側へ動かすことになるため）
-  const inset = 0.08;
+  // 検出できなかった場合の初期位置は、画像の端ではなくはっきり内側に置く
+  // （実写では領収書が中央に写ることが多く、端寄りに置くより合わせる移動量が少ない。
+  //   横15%・縦10%はオーナーの実機フィードバックに合わせた値）
+  const insetX = 0.15, insetY = 0.10;
   const full = [
-    { x: inset, y: inset }, { x: 1 - inset, y: inset },
-    { x: 1 - inset, y: 1 - inset }, { x: inset, y: 1 - inset },
+    { x: insetX, y: insetY }, { x: 1 - insetX, y: insetY },
+    { x: 1 - insetX, y: 1 - insetY }, { x: insetX, y: 1 - insetY },
   ];
   if (canvas.width < 20 || canvas.height < 20) return full;
   const imageData = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
@@ -1917,10 +1918,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("s-model").value = settings.model ?? DEFAULT_MODEL;
   // 保存済みのモデルが選択肢に無い場合（旧バージョンの自由入力値など）は既定値に戻す
   if ($("s-model").value === "") $("s-model").value = DEFAULT_MODEL;
-  // 影消去・コントラスト補正のON/OFFを復元（既定はON）。変更のたびに設定へ保存し、
-  // 編集中の画像プレビューにも即時反映する（チェックした時点で結果を確認できる）
-  $("opt-shadow").checked = settings.removeShadow !== false;
-  $("opt-contrast").checked = settings.autoContrast !== false;
+  // 影消去・コントラスト補正のON/OFFを復元（既定はOFF＝元の写真のまま）。
+  // 変更のたびに設定へ保存し、編集中の画像プレビューにも即時反映する
+  $("opt-shadow").checked = settings.removeShadow === true;
+  $("opt-contrast").checked = settings.autoContrast === true;
   const saveFilterOptions = () => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
       ...loadSettings(),
