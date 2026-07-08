@@ -231,6 +231,30 @@
     margin-top: 10px;
     letter-spacing: 0.03em;
   }
+  /* 補正ON/OFFのチェックボックス。全体のinputスタイル(appearance:none等)を打ち消す */
+  #filter-options {
+    display: flex;
+    justify-content: center;
+    gap: 22px;
+    margin-top: 10px;
+  }
+  .filter-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .filter-check input[type="checkbox"] {
+    -webkit-appearance: checkbox;
+    appearance: auto;
+    display: inline-block;
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    accent-color: var(--accent-strong);
+  }
   /* touch-action:noneで画像上のタッチによるスクロール・引っ張って更新を無効化。
      user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ。
      幅はキャンバス（＝画像の表示サイズ）に合わせて中央寄せする */
@@ -453,6 +477,11 @@
           <canvas id="crop-loupe" class="hidden"></canvas>
         </div>
         <p id="crop-hint">四隅を領収書の角に合わせてください ─ 傾きは自動で補正されます</p>
+        <!-- 補正のON/OFF。選択は設定として記憶され、次回以降も引き継がれる -->
+        <div id="filter-options">
+          <label class="filter-check"><input type="checkbox" id="opt-shadow" checked>影消去</label>
+          <label class="filter-check"><input type="checkbox" id="opt-contrast" checked>コントラスト補正</label>
+        </div>
       </div>
       <button id="analyze-btn" disabled>解析する</button>
       <!-- 写真選択後の取り消し用。これが無いと選んだ写真を破棄する手段がない -->
@@ -593,7 +622,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.38 影消去を追加";
+const APP_VERSION = "2026-07-08.39 補正のON/OFF・初期ハンドル調整";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1256,7 +1285,13 @@ function downscaleCanvas(src, maxDim) {
 }
 
 function detectInitialQuad(canvas) {
-  const full = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  // 検出できなかった場合の初期位置は、画像の端ちょうどではなく少し内側に置く
+  // （端のハンドルは掴みにくく、たいてい内側へ動かすことになるため）
+  const inset = 0.08;
+  const full = [
+    { x: inset, y: inset }, { x: 1 - inset, y: inset },
+    { x: 1 - inset, y: 1 - inset }, { x: inset, y: 1 - inset },
+  ];
   if (canvas.width < 20 || canvas.height < 20) return full;
   const imageData = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
   const bounds = detectContentBounds(imageData);
@@ -1383,15 +1418,16 @@ function updateCropLoupe(cornerIndex) {
   loupe.classList.remove("hidden");
 }
 
-// 現在の四隅で切り抜き→まっすぐ補正→影消去→コントラスト自動補正→JPEG化
+// 現在の四隅で切り抜き→まっすぐ補正→影消去→コントラスト自動補正→JPEG化。
+// 影消去とコントラスト補正はチェックボックスでON/OFFできる
 function cropAndEnhance(quality = 0.85) {
   const quadPx = cropQuad.map((p) => ({
     x: p.x * cropSourceCanvas.width,
     y: p.y * cropSourceCanvas.height,
   }));
   const out = warpQuadToRect(cropSourceCanvas, quadPx, 1800);
-  removeShadow(out);
-  autoEnhanceContrast(out);
+  if ($("opt-shadow").checked) removeShadow(out);
+  if ($("opt-contrast").checked) autoEnhanceContrast(out);
   return new Promise((resolve, reject) => {
     out.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error("画像の変換に失敗しました"))),
@@ -1772,6 +1808,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("s-model").value = settings.model ?? DEFAULT_MODEL;
   // 保存済みのモデルが選択肢に無い場合（旧バージョンの自由入力値など）は既定値に戻す
   if ($("s-model").value === "") $("s-model").value = DEFAULT_MODEL;
+  // 影消去・コントラスト補正のON/OFFを復元（既定はON）。変更のたびに設定へ保存する
+  $("opt-shadow").checked = settings.removeShadow !== false;
+  $("opt-contrast").checked = settings.autoContrast !== false;
+  const saveFilterOptions = () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      ...loadSettings(),
+      removeShadow: $("opt-shadow").checked,
+      autoContrast: $("opt-contrast").checked,
+    }));
+  };
+  $("opt-shadow").addEventListener("change", saveFilterOptions);
+  $("opt-contrast").addEventListener("change", saveFilterOptions);
   $("version-label").textContent = `バージョン: ${APP_VERSION}`;
 
   // ナビゲーション
@@ -2166,7 +2214,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("settings-save-btn").addEventListener("click", () => {
     const inputKey = $("s-apikey").value.trim();
     const apiKey = inputKey || loadSettings().apiKey || "";
+    // 補正ON/OFFなど他のキーを消さないよう、既存設定へ上書きマージする
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      ...loadSettings(),
       apiKey,
       model: $("s-model").value.trim() || DEFAULT_MODEL,
     }));
