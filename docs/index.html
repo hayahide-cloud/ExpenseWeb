@@ -255,14 +255,16 @@
     margin: 0;
     accent-color: var(--accent-strong);
   }
-  /* touch-action:noneで画像上のタッチによるスクロール・引っ張って更新を無効化。
+  /* 画像上のタッチは縦スクロールとして通す(pan-y)。ホーム画面アプリでは画面内タッチが
+     唯一のスクロール手段のため、完全に無効化すると下の解析ボタンへ到達できなくなる。
+     ドラッグの当たり判定はハンドル要素側(touch-action:none)に限定する。
      user-select/touch-callout無効化で長押し時のiOSの選択メニュー(コピー等)を防ぐ。
      幅はキャンバス（＝画像の表示サイズ）に合わせて中央寄せする */
   #crop-stage {
     position: relative;
     width: fit-content;
     margin: 0 auto;
-    touch-action: none;
+    touch-action: pan-y;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
@@ -270,17 +272,24 @@
   }
   /* サイズは画面に収まるようJSで計算して設定する */
   #crop-canvas { display: block; border-radius: 12px; border: 1px solid var(--border); }
-  /* ハンドルは見た目のみ。当たり判定はステージ側で「最寄りの角を掴む」方式のため
-     pointer-events:noneにして、タッチはすべて#crop-stageが受ける */
+  /* ハンドル本体は120px四方の透明な当たり判定で、この上のタッチだけスクロールさせずに
+     ドラッグとして扱う。見た目の30pxの丸は::afterで中央に描く */
   .crop-handle {
     position: absolute;
+    width: 120px; height: 120px;
+    transform: translate(-50%, -50%);
+    touch-action: none;
+  }
+  .crop-handle::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
     width: 30px; height: 30px;
+    transform: translate(-50%, -50%);
     border-radius: 50%;
     background: rgba(124, 58, 237, 0.4);
     border: 2px solid #fff;
     box-shadow: 0 0 0 1px var(--accent);
-    transform: translate(-50%, -50%);
-    pointer-events: none;
   }
   /* ドラッグ中の拡大鏡: 指の真上に浮かんでドラッグに追従する（位置はJSで更新） */
   #crop-loupe {
@@ -622,7 +631,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.39 補正のON/OFF・初期ハンドル調整";
+const APP_VERSION = "2026-07-08.40 アプリ利用時にスクロールできない問題を修正";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1870,45 +1879,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // トリミングエディタ: ドラッグ操作（タッチ・マウス共通のPointer Events）。
-  // ハンドルの円そのものではなく、ステージ上のタッチ位置から最も近い角を掴む方式に
-  // している（半径120px以内）。小さい円を正確に押さえる必要がなく、誤タップが減る。
+  // 当たり判定は各ハンドルの120px四方（touch-action:none）に限定し、その外側の画像上の
+  // タッチは通常の縦スクロールとして通す。ホーム画面アプリでは画面内タッチが唯一の
+  // スクロール手段のため、画像全面でスクロールを止めると解析ボタンへ到達できなくなる。
   // ドラッグ中は指で角が隠れるため、拡大鏡で角の周辺を表示する
-  {
-    const stageEl = $("crop-stage");
-    const GRAB_RADIUS = 120; // この距離(px)以内に角があれば掴む
-    let draggingCorner = null;
-
-    stageEl.addEventListener("pointerdown", (e) => {
+  document.querySelectorAll(".crop-handle").forEach((el) => {
+    const corner = Number(el.dataset.corner);
+    el.addEventListener("pointerdown", (e) => {
       if (!cropQuad) return;
       e.preventDefault();
-      const rect = stageEl.getBoundingClientRect();
-      const x = e.clientX - rect.left, y = e.clientY - rect.top;
-      let best = -1, bestDist = Infinity;
-      cropQuad.forEach((p, i) => {
-        const d = Math.hypot(p.x * rect.width - x, p.y * rect.height - y);
-        if (d < bestDist) { bestDist = d; best = i; }
-      });
-      if (bestDist > GRAB_RADIUS) return;
-      draggingCorner = best;
-      stageEl.setPointerCapture(e.pointerId);
-      updateCropLoupe(best);
+      el.setPointerCapture(e.pointerId);
+      updateCropLoupe(corner);
     });
-    stageEl.addEventListener("pointermove", (e) => {
-      if (draggingCorner === null || !cropQuad) return;
-      const rect = stageEl.getBoundingClientRect();
-      const q = cropQuad[draggingCorner];
+    el.addEventListener("pointermove", (e) => {
+      if (!el.hasPointerCapture(e.pointerId) || !cropQuad) return;
+      const rect = $("crop-stage").getBoundingClientRect();
+      const q = cropQuad[corner];
       q.x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       q.y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
       renderCropEditor();
-      updateCropLoupe(draggingCorner);
+      updateCropLoupe(corner);
     });
-    const endDrag = () => {
-      draggingCorner = null;
-      $("crop-loupe").classList.add("hidden");
-    };
-    stageEl.addEventListener("pointerup", endDrag);
-    stageEl.addEventListener("pointercancel", endDrag);
-  }
+    const endDrag = () => $("crop-loupe").classList.add("hidden");
+    el.addEventListener("pointerup", endDrag);
+    el.addEventListener("pointercancel", endDrag);
+    el.addEventListener("lostpointercapture", endDrag);
+  });
   window.addEventListener("resize", renderCropEditor);
 
   // 解析。トリミングエディタの四隅で切り抜き・傾き補正した画像をOCRと保存の両方に使う
