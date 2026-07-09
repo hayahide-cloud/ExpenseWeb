@@ -596,8 +596,9 @@
           <option value="">未選択</option>
         </select>
       </label>
-      <label>摘要 <span class="char-counter"><span id="memo-count">0</span>/20</span>
-        <input type="text" id="f-memo" maxlength="20" placeholder="購入品目の要約">
+      <label>摘要
+        <!-- 文字数制限なし・改行可。交通費取込では行程（1行1区間）が自動で入る -->
+        <textarea id="f-memo" rows="3" placeholder="購入品目の要約・行程など"></textarea>
       </label>
       <button id="save-btn">保存</button>
       <div class="action-row">
@@ -728,7 +729,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.60 交通費: 行程（区間の内訳）も取得して依頼内容・用途へ";
+const APP_VERSION = "2026-07-09.61 行程は摘要へ・摘要を文字数無制限の複数行に";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1288,7 +1289,7 @@ async function analyzeImage(dataUrl) {
     vendor: String(extracted.vendor ?? ""),
     amount: parseInt(extracted.amount, 10) || 0,
     category: CATEGORIES.includes(extracted.category) ? extracted.category : "",
-    memo: String(extracted.memo ?? "").slice(0, 20),
+    memo: String(extracted.memo ?? ""),
   };
 }
 
@@ -1299,19 +1300,21 @@ async function analyzeTransitImage(dataUrls) {
   const extracted = await callVisionApi(dataUrls, TRANSIT_PROMPT);
   const from = String(extracted.from ?? "").trim();
   const to = String(extracted.to ?? "").trim();
-  // 行程（区間ごとの内訳）。1行1区間で依頼内容・用途に入れる
-  // （改行対応済みのため一覧にもそのまま縦に並び、申請メールの本文にも入る）
+  // 行程（区間ごとの内訳）。1行1区間で摘要に入れる（摘要は文字数制限なし・改行可）。
+  // 行程が取れなかった場合は全体区間「出発地→到着地」を摘要にする。
+  // 依頼内容・用途は空のまま残し、利用者が出張の用件等を書く欄として使う
   const legs = Array.isArray(extracted.legs)
     ? extracted.legs.map((s) => String(s).trim()).filter((s) => s !== "")
     : [];
+  const wholeRoute = from && to ? `${from}→${to}` : "";
   // 経路スクショには日付が写らないことが多い。空なら当日移動の精算を想定して今日を既定にする
   return {
     date: String(extracted.date ?? "") || todayString(),
     vendor: String(extracted.line ?? "").trim(),
     amount: parseInt(extracted.amount, 10) || 0,
     category: "交通費",
-    memo: (from && to ? `${from}→${to}` : "").slice(0, 20),
-    note: legs.join("\n"),
+    memo: legs.length > 0 ? legs.join("\n") : wholeRoute,
+    note: "",
   };
 }
 
@@ -1858,7 +1861,6 @@ function openForm(data, title) {
   $("f-category").value = data.category;
   $("f-memo").value = data.memo;
   $("f-note").value = data.note ?? "";
-  $("memo-count").textContent = String(data.memo.length);
   const review = computeNeedsReview(data.date, data.vendor, data.amount, data.category);
   $("review-banner").textContent = review;
   $("review-banner").classList.toggle("hidden", review === "");
@@ -2094,7 +2096,7 @@ function getFormReceipt() {
     vendor: $("f-vendor").value.trim(),
     amount: parseAmountInput($("f-amount").value),
     category: $("f-category").value,
-    memo: $("f-memo").value.trim().slice(0, 20),
+    memo: $("f-memo").value.trim(),
     note: $("f-note").value.trim(),
     filename: editImageFilename || "(手入力)",
     // パネルの表示・非表示に関わらず、入力欄に値が残っていれば記録する
@@ -2470,11 +2472,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("form-step").addEventListener("input", () => saveDraft());
   $("form-step").addEventListener("change", () => saveDraft());
 
-  // 摘要の文字数カウンタ
-  $("f-memo").addEventListener("input", () => {
-    $("memo-count").textContent = String($("f-memo").value.length);
-  });
-
   // 金額入力: 入力のたびにカンマ区切りへ整形する（数字以外は破棄）
   $("f-amount").addEventListener("input", (e) => {
     e.target.value = formatAmountForInput(parseAmountInput(e.target.value));
@@ -2496,7 +2493,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const vendor = $("f-vendor").value.trim();
     const amount = parseAmountInput($("f-amount").value);
     const category = $("f-category").value;
-    const memo = $("f-memo").value.trim().slice(0, 20);
+    const memo = $("f-memo").value.trim();
     const note = $("f-note").value.trim();
     const needsReview = computeNeedsReview(date, vendor, amount, category);
     // パネルの表示・非表示に関わらず、2人以上が入力されていれば記録する
