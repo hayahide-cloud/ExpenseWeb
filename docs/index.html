@@ -239,6 +239,11 @@
   }
   .file-button input { display: none; }
   #transit-label { margin-top: 10px; }
+  /* 貼り付けのヒントはPC（ホバー可能な端末）でのみ表示する。スマホでは無関係のため */
+  .paste-hint { display: none; }
+  @media (hover: hover) and (pointer: fine) {
+    .paste-hint { display: block; }
+  }
   .file-button.busy { pointer-events: none; opacity: 0.6; }
   /* 連結結果の確認中は、撮影・取込の各ボタンを隠して確認に集中させる */
   #capture-step.transit-previewing > h2,
@@ -550,6 +555,8 @@
         <span id="transit-label-text">🚃 交通費: 経路のスクショを取込</span>
         <input type="file" id="transit-input" accept="image/*" multiple>
       </label>
+      <!-- PC向けの操作ヒント。タッチ端末（スマホ）では非表示 -->
+      <p class="note paste-hint" style="text-align: center;">コピーした画像を Ctrl+V（⌘V）で貼り付けても取り込めます</p>
       <button id="manual-btn" class="ghost">手入力で追加</button>
       <!-- 交通費: 連結結果の確認ステップ。結合した画像を確認してから「解析する」で
            OCRを実行する（連結に問題がある場合にAPI呼び出しを無駄にしないため） -->
@@ -557,6 +564,7 @@
         <h2>連結結果を確認</h2>
         <img id="transit-preview-img" alt="連結したスクリーンショット">
         <p class="note" style="text-align: center;">タップで拡大表示できます</p>
+        <p class="note paste-hint" style="text-align: center;">画像を貼り付ける（Ctrl+V / ⌘V）と次のページとして追加されます</p>
         <button id="transit-analyze-btn">解析する</button>
         <button id="transit-cancel-btn" class="ghost">キャンセル</button>
       </div>
@@ -729,7 +737,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.61 行程は摘要へ・摘要を文字数無制限の複数行に";
+const APP_VERSION = "2026-07-09.62 交通費: 画像のコピペ取込（PC向け）に対応";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2293,21 +2301,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // 交通費: 経路検索スクショの取込（2段階）。
-  // 1段階目（ここ）: 選択した複数枚を縦に連結し、結果を画面で確認してもらう。
+  // 1段階目: 画像を縦に連結し、結果を画面で確認してもらう。
   //   連結に問題があった場合にAPI呼び出しを無駄にしないため、この時点ではOCRしない。
   // 2段階目（transit-analyze-btn）: 確認後に「解析する」でOCRを実行する。
   // OCRには全枚を個別に渡して読み取り精度を保ち（縮小結合すると縦長になりすぎて
-  // 文字が潰れる）、証憑用には連結した1枚を使う
-  $("transit-input").addEventListener("change", async () => {
-    const files = Array.from($("transit-input").files);
-    $("transit-input").value = "";
+  // 文字が潰れる）、証憑用には連結した1枚を使う。
+  // 入口はファイル選択とクリップボード貼り付け（PC向け）の2つで、共通処理はここに集約。
+  // appendがtrueなら確認ステップ表示中の追加ページとして既存の選択に連結し直す
+  async function addTransitImages(files, append) {
     if (files.length === 0) return;
     if (files.some((f) => !f.type.startsWith("image/"))) {
       showMessage("error", "画像（スクリーンショット）を選択してください。");
-      return;
-    }
-    if (files.length > 8) {
-      showMessage("error", "一度に選択できるスクショは8枚までです。");
       return;
     }
     const label = $("transit-label");
@@ -2317,8 +2321,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       // 連結時の重なり検出は元解像度のピクセル一致を利用するため、縮小せずに読み込む
       // （3600pxはiOS Safariのキャンバス面積上限に収まる安全値。スマホのスクショは通常これ以下）
-      const canvases = [];
+      const canvases = append && transitCanvases ? [...transitCanvases] : [];
       for (const f of files) canvases.push(await loadCanvasFromFile(f, 3600));
+      if (canvases.length > 8) {
+        showMessage("error", "一度に取り込めるスクショは8枚までです。");
+        return;
+      }
       const stitched = stitchCanvasesVertically(canvases);
       transitCanvases = canvases;
       transitStitchedBlob = await canvasToJpegBlob(stitched.canvas);
@@ -2342,6 +2350,29 @@ document.addEventListener("DOMContentLoaded", async () => {
       label.classList.remove("busy");
       textEl.textContent = "🚃 交通費: 経路のスクショを取込";
     }
+  }
+
+  $("transit-input").addEventListener("change", async () => {
+    const files = Array.from($("transit-input").files);
+    $("transit-input").value = "";
+    await addTransitImages(files, false);
+  });
+
+  // クリップボードからの貼り付け取込（主にPC向け。コピーした画像をCtrl+V / ⌘Vで取り込む）。
+  // 取込タブ表示中で、撮影のトリミング中・明細編集中でない場合のみ反応する。
+  // 確認ステップ表示中の貼り付けは「次のページの追加」として連結し直す
+  document.addEventListener("paste", (e) => {
+    if (!$("panel-capture").classList.contains("active")) return;
+    if (document.body.classList.contains("crop-fullscreen")) return;
+    if (!$("form-step").classList.contains("hidden")) return;
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f) => f !== null);
+    if (files.length === 0) return;
+    e.preventDefault();
+    const appending = !$("transit-preview").classList.contains("hidden");
+    addTransitImages(files, appending);
   });
 
   // 交通費: 連結結果の確認後に解析を実行する
