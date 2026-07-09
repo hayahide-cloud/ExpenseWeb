@@ -705,7 +705,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.55 重なり未検出の継ぎ目を通知";
+const APP_VERSION = "2026-07-09.56 重なり照合を強化（後向き照合・全域検証・固定バー除去）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1571,16 +1571,125 @@ function findOverlap(prevCanvas, curCanvas) {
   const W = 200; // 粗探索は幅200pxの縮小版で行う（速度と精度のバランス）
   const prev = toGrayScaled(prevCanvas, W);
   const cur = toGrayScaled(curCanvas, W);
-  const strip = 24; // テンプレートの帯の高さ（縮小版の行数）
+  const toReal = prevCanvas.width / W;
+  // 精密照合・検証用に実解像度のグレースケールも1回だけ作って使い回す
+  const prevFull = toGrayFull(prevCanvas);
+  const curFull = toGrayFull(curCanvas);
+
+  // 前向き照合: 下画像(cur)の上寄りの帯を上画像(prev)から探す（通常の重なり）。
+  // 後向き照合: 重なりが浅い（スクロール量がほぼ1画面分）と、共有部分が下画像の
+  // 固定ヘッダー直下の数十pxしかなく前向きの帯が届かないことがあるため、
+  // 上画像(prev)の下寄りの帯を下画像(cur)の上部からも探す
   const candidates = [];
-  for (const frac of [0.08, 0.15, 0.22, 0.3]) {
-    const tY = Math.round(cur.height * frac);
-    if (tY + strip > cur.height) continue;
+  for (const cand of matchStrips(cur, prev, [0.08, 0.15, 0.22, 0.3, 0.4], 0.25, 1.0)) {
+    const tmplY = Math.round(cand.tmplY * toReal);
+    const r = refineMatch(prevFull, Math.round(cand.searchY * toReal), curFull, tmplY, toReal);
+    if (r) candidates.push({ prevY: r.y, curY: tmplY, refineScore: r.score });
+  }
+  for (const cand of matchStrips(prev, cur, [0.6, 0.68, 0.76, 0.84], 0.05, 0.75)) {
+    const tmplY = Math.round(cand.tmplY * toReal);
+    const r = refineMatch(curFull, Math.round(cand.searchY * toReal), prevFull, tmplY, toReal);
+    if (r) candidates.push({ prevY: tmplY, curY: r.y, refineScore: r.score });
+  }
+  if (candidates.length === 0) return null;
+
+  // 検証: アプリ画面には同一デザインのUI部品が繰り返し現れるため、帯だけの一致では
+  // 間違った位置にピクセル一致してしまうことがある。候補が示すずれ量で重なり範囲
+  // 全体を照合し、範囲全体が一致する候補だけを採用する。
+  // 重なりが浅く検証できる範囲が無い場合のみ、帯の一致スコアが最良の候補を信じる
+  let bestValidated = null;
+  let bestShallow = null;
+  for (const c of candidates) {
+    const v = validateOffset(prevFull, curFull, c.prevY, c.curY);
+    if (v.span >= 40) {
+      if (v.score <= 6 && (!bestValidated || v.score < bestValidated.v)) {
+        bestValidated = { prevY: c.prevY, curY: c.curY, v: v.score };
+      }
+    } else if (!bestShallow || c.refineScore < bestShallow.refineScore) {
+      bestShallow = c;
+    }
+  }
+  // validated: 重なり範囲全体の照合を通過した候補か（通過していれば位置の信頼度が高い）
+  if (bestValidated) return { prevY: bestValidated.prevY, curY: bestValidated.curY, validated: true };
+  if (bestShallow) return { prevY: bestShallow.prevY, curY: bestShallow.curY, validated: false };
+  return null;
+}
+
+// キャンバス全体を実解像度のままグレースケール輝度配列にする
+function toGrayFull(canvas) {
+  const { width, height } = canvas;
+  const d = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+  const gray = new Float32Array(width * height);
+  for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+    gray[p] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  }
+  return { gray, width, height };
+}
+
+// 重なりが見つからなかった継ぎ目用: 2枚に共通する固定UI（上端のステータスバー・
+// アプリのヘッダー、下端の操作バー）の高さを検出する。固定UIはどのスクショにも
+// 同じ位置にほぼピクセル一致で写るため、同じ行同士を比べて一致が続く範囲を上下から測る
+function findFixedChrome(prevCanvas, curCanvas) {
+  const prev = toGrayFull(prevCanvas);
+  const cur = toGrayFull(curCanvas);
+  const width = Math.min(prev.width, cur.width);
+  const rowDiff = (py, cy) => {
+    let sad = 0, n = 0;
+    const pBase = py * prev.width;
+    const cBase = cy * cur.width;
+    for (let x = 0; x < width; x += 3) {
+      sad += Math.abs(prev.gray[pBase + x] - cur.gray[cBase + x]);
+      n++;
+    }
+    return sad / n;
+  };
+  const height = Math.min(prev.height, cur.height);
+  let top = 0;
+  const topMax = Math.floor(height * 0.35);
+  while (top < topMax && rowDiff(top, top) < 3) top++;
+  let bottom = 0;
+  const bottomMax = Math.floor(height * 0.25);
+  while (bottom < bottomMax && rowDiff(prev.height - 1 - bottom, cur.height - 1 - bottom) < 3) bottom++;
+  return { top, bottom };
+}
+
+// 候補位置(prevY, curY)が示すずれ量で、重なり範囲全体（curのcurY以降が
+// prevのprevY以降と重なる範囲）をサンプリング照合する。
+// prev側の下端12%は固定フッター（保存バー・ホームバー等）の可能性が高いため除外する。
+// 戻り値: { score: 平均輝度差, span: 照合できた実ピクセル行数 }
+function validateOffset(prev, cur, prevY, curY) {
+  const delta = prevY - curY; // curの行y ↔ prevの行y+delta
+  const yFrom = curY;
+  const yTo = Math.min(cur.height, Math.round(prev.height * 0.88) - delta);
+  const span = yTo - yFrom;
+  if (span < 40) return { score: 0, span };
+  let sad = 0, n = 0;
+  for (let y = yFrom; y < yTo; y += 3) {
+    const cBase = y * cur.width;
+    const pBase = (y + delta) * prev.width;
+    for (let x = 0; x < cur.width; x += 4) {
+      sad += Math.abs(cur.gray[cBase + x] - prev.gray[pBase + x]);
+      n++;
+    }
+  }
+  return { score: sad / n, span };
+}
+
+// 粗探索: tmpl側のfracs位置から帯（テンプレート）を切り出し、search側の
+// [searchFromFrac, searchToFrac]の範囲で最も一致する縦位置をSADで探す。
+// 判定はせず、帯ごとの最良候補を返す（最終判定は実解像度のrefineMatchが行う）
+function matchStrips(tmpl, search, fracs, searchFromFrac, searchToFrac) {
+  const W = tmpl.width;
+  const strip = 16; // 帯の高さ（縮小版の行数）。細いほど浅い重なりを拾える
+  const candidates = [];
+  for (const frac of fracs) {
+    const tY = Math.round(tmpl.height * frac);
+    if (tY + strip > tmpl.height) continue;
     // ほぼ無地（分散が小さい）の帯はどこにでも一致してしまうためスキップする
     let sum = 0, sumSq = 0;
     for (let r = 0; r < strip; r++) {
       for (let x = 0; x < W; x++) {
-        const v = cur.gray[(tY + r) * W + x];
+        const v = tmpl.gray[(tY + r) * W + x];
         sum += v;
         sumSq += v * v;
       }
@@ -1589,58 +1698,51 @@ function findOverlap(prevCanvas, curCanvas) {
     const variance = sumSq / n - (sum / n) ** 2;
     if (variance < 25) continue;
 
-    // prevの上部1/4は固定ヘッダーの可能性が高いため探索から外す
     let best = null;
-    const searchStart = Math.round(prev.height * 0.25);
-    for (let y = searchStart; y + strip <= prev.height; y++) {
+    const from = Math.round(search.height * searchFromFrac);
+    const to = Math.min(Math.round(search.height * searchToFrac), search.height - strip);
+    for (let y = from; y <= to; y++) {
       let sad = 0;
       for (let r = 0; r < strip; r++) {
-        const pBase = (y + r) * W;
-        const cBase = (tY + r) * W;
-        for (let x = 0; x < W; x++) sad += Math.abs(prev.gray[pBase + x] - cur.gray[cBase + x]);
+        const sBase = (y + r) * W;
+        const tBase = (tY + r) * W;
+        for (let x = 0; x < W; x++) sad += Math.abs(search.gray[sBase + x] - tmpl.gray[tBase + x]);
       }
       const score = sad / n;
-      if (!best || score < best.score) best = { score, scaledPrevY: y, scaledCurY: tY };
+      if (!best || score < best.score) best = { score, searchY: y, tmplY: tY };
     }
     // 粗探索は緩めに通す（縮小の位相ズレでスコアが悪化していても精密照合で拾えるように）
     if (best && best.score <= 12) candidates.push(best);
   }
-  if (candidates.length === 0) return null;
-  return refineOverlap(prevCanvas, curCanvas, candidates, prevCanvas.width / W);
+  return candidates;
 }
 
-// 精密照合: 粗探索の候補位置の周辺（±縮小2行分）を実解像度で1pxずつ照合する。
-// 真の重なりはピクセルがほぼ一致するため、平均輝度差の閾値を厳しくして誤結合を防ぐ
-function refineOverlap(prevCanvas, curCanvas, candidates, toReal) {
-  const width = prevCanvas.width;
-  const prevData = prevCanvas.getContext("2d").getImageData(0, 0, width, prevCanvas.height).data;
-  const curData = curCanvas.getContext("2d").getImageData(0, 0, width, curCanvas.height).data;
-  const lum = (d, i) => d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-  const stripReal = Math.round(24 * toReal);
+// 精密照合: tmpl（実解像度グレースケール）のtmplY位置の帯を、searchのcenterY周辺
+// （±縮小2行分）で1px刻みに照合する。真の重なりはピクセルがほぼ一致するため、
+// 平均輝度差の閾値を厳しくして誤結合を防ぐ。一致すれば { y, score } を返す
+function refineMatch(search, centerY, tmpl, tmplY, toReal) {
+  const width = search.width;
+  const stripReal = Math.round(16 * toReal);
+  if (tmplY + stripReal > tmpl.height) return null;
+  const win = Math.ceil(2 * toReal);
+  const from = Math.max(0, centerY - win);
+  const to = Math.min(search.height - stripReal, centerY + win);
   let best = null;
-  for (const cand of candidates) {
-    const curY = Math.round(cand.scaledCurY * toReal);
-    if (curY + stripReal > curCanvas.height) continue;
-    const center = Math.round(cand.scaledPrevY * toReal);
-    const win = Math.ceil(2 * toReal);
-    const from = Math.max(0, center - win);
-    const to = Math.min(prevCanvas.height - stripReal, center + win);
-    for (let y = from; y <= to; y++) {
-      let sad = 0, n = 0;
-      for (let r = 0; r < stripReal; r += 2) { // 行・列とも間引いて照合（十分な画素数がある）
-        const pBase = ((y + r) * width) * 4;
-        const cBase = ((curY + r) * width) * 4;
-        for (let x = 0; x < width; x += 4) {
-          sad += Math.abs(lum(prevData, pBase + x * 4) - lum(curData, cBase + x * 4));
-          n++;
-        }
+  for (let y = from; y <= to; y++) {
+    let sad = 0, n = 0;
+    for (let r = 0; r < stripReal; r += 2) { // 行・列とも間引いて照合（十分な画素数がある）
+      const sBase = (y + r) * width;
+      const tBase = (tmplY + r) * width;
+      for (let x = 0; x < width; x += 4) {
+        sad += Math.abs(search.gray[sBase + x] - tmpl.gray[tBase + x]);
+        n++;
       }
-      const score = sad / n;
-      if (!best || score < best.score) best = { score, prevY: y, curY };
     }
+    const score = sad / n;
+    if (!best || score < best.score) best = { score, y };
   }
   if (!best || best.score > 4) return null;
-  return { prevY: best.prevY, curY: best.curY };
+  return best;
 }
 
 // 複数のキャンバスを縦に連結して1枚にする(スクロールできない画面の分割スクショを
@@ -1661,12 +1763,21 @@ function stitchCanvasesVertically(canvases) {
   let unmatchedSeams = 0;
   for (let i = 1; i < aligned.length; i++) {
     const ov = findOverlap(aligned[i - 1], aligned[i]);
-    // 検出位置が浅すぎて前の画像がほぼ消える場合は誤検出とみなし単純連結にする
-    if (ov && ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2) {
+    // 全域検証を通過した候補はそのまま信頼する（スクロール量が少なく前の画像の大半が
+    // 重複しているのが正しい場合もある）。帯だけの一致（浅い重なり）は、前の画像が
+    // ほぼ消える・後の画像の大半が捨てられる位置なら誤検出とみなし単純連結にする
+    if (ov && (ov.validated ||
+        (ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2 &&
+         ov.curY < aligned[i].height * 0.75))) {
       cuts[i - 1].end = ov.prevY;
       cuts[i].start = ov.curY;
     } else {
       unmatchedSeams++;
+      // 重なり位置は特定できなくても、共通の固定UI（ステータスバー・操作バー等）が
+      // 継ぎ目で二重に写らないよう、両画像に共通する上下の固定部分だけは取り除く
+      const chrome = findFixedChrome(aligned[i - 1], aligned[i]);
+      cuts[i - 1].end = aligned[i - 1].height - chrome.bottom;
+      cuts[i].start = chrome.top;
     }
   }
 
@@ -2170,7 +2281,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (stitched.unmatchedSeams > 0) {
         showMessage("warn",
           `スクショの重なりを検出できなかった継ぎ目が${stitched.unmatchedSeams}カ所あります。` +
-          "その部分は重ねずにそのまま縦に並べて連結しました（内容の欠落はありません）。証憑画像をご確認ください。");
+          "その部分は共通の固定表示（バー等）だけ取り除いて縦に並べました（内容の欠落はありません）。証憑画像をご確認ください。");
       } else {
         showMessage("", "");
       }
