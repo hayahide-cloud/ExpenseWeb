@@ -705,7 +705,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.54 分割スクショの重なりを検出してきれいに連結";
+const APP_VERSION = "2026-07-09.55 重なり未検出の継ぎ目を通知";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1647,21 +1647,26 @@ function refineOverlap(prevCanvas, curCanvas, candidates, toReal) {
 // 1枚の証憑画像に繋ぐ用途)。連続する2枚の重なりをfindOverlapで検出し、重複部分を
 // 重ねて自然に繋ぐ。検出できなかった継ぎ目はそのまま縦に並べる。
 // 重なり照合は元解像度のピクセル一致を利用するため、切り出しまでは元解像度のまま行い、
-// 出力時にだけ幅1100px以下・面積14Mpx以下（iOS Safariのキャンバス上限対策）へ縮小する
+// 出力時にだけ幅1100px以下・面積14Mpx以下（iOS Safariのキャンバス上限対策）へ縮小する。
+// 戻り値: { canvas, unmatchedSeams } — unmatchedSeamsは重なりを検出できず
+// 単純連結にフォールバックした継ぎ目の数（呼び出し側で利用者への通知に使う）
 function stitchCanvasesVertically(canvases) {
-  if (canvases.length === 1) return canvases[0];
+  if (canvases.length === 1) return { canvas: canvases[0], unmatchedSeams: 0 };
   // 同一端末のスクショは幅が揃っている前提。異なる場合のみ最小幅へ揃える（照合精度は落ちる）
   const minWidth = Math.min(...canvases.map((c) => c.width));
   const aligned = canvases.map((c) => scaleCanvasToWidth(c, minWidth));
 
   // 各画像の描画範囲（重なり分を切り落とした後のsrc範囲）を決める
   const cuts = aligned.map((c) => ({ start: 0, end: c.height }));
+  let unmatchedSeams = 0;
   for (let i = 1; i < aligned.length; i++) {
     const ov = findOverlap(aligned[i - 1], aligned[i]);
     // 検出位置が浅すぎて前の画像がほぼ消える場合は誤検出とみなし単純連結にする
     if (ov && ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2) {
       cuts[i - 1].end = ov.prevY;
       cuts[i].start = ov.curY;
+    } else {
+      unmatchedSeams++;
     }
   }
 
@@ -1686,7 +1691,7 @@ function stitchCanvasesVertically(canvases) {
     ctx.drawImage(aligned[i], 0, cuts[i].start, minWidth, srcH, 0, Math.round(y), out.width, Math.ceil(destH));
     y += destH;
   }
-  return out;
+  return { canvas: out, unmatchedSeams };
 }
 
 function canvasToJpegBlob(canvas, quality = 0.85) {
@@ -2148,7 +2153,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       // （3600pxはiOS Safariのキャンバス面積上限に収まる安全値。スマホのスクショは通常これ以下）
       const canvases = [];
       for (const f of files) canvases.push(await loadCanvasFromFile(f, 3600));
-      currentImage = await canvasToJpegBlob(stitchCanvasesVertically(canvases));
+      const stitched = stitchCanvasesVertically(canvases);
+      currentImage = await canvasToJpegBlob(stitched.canvas);
       // OCRへは各ページを1800pxに縮小して個別に渡す
       const dataUrls = [];
       for (const c of canvases) dataUrls.push(await canvasToJpegBlob(downscaleCanvas(c, 1800)).then(blobToDataUrl));
@@ -2159,7 +2165,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       editImageBlob = currentImage;
       $("image-toggle-wrap").classList.remove("hidden");
       showEditPreview();
-      showMessage("", "");
+      // 重なりを検出できなかった継ぎ目がある場合は、証憑画像の状態を利用者に知らせる
+      // （欠落ではなく単純な縦並びになっただけなので、warnで表示して確認を促す）
+      if (stitched.unmatchedSeams > 0) {
+        showMessage("warn",
+          `スクショの重なりを検出できなかった継ぎ目が${stitched.unmatchedSeams}カ所あります。` +
+          "その部分は重ねずにそのまま縦に並べて連結しました（内容の欠落はありません）。証憑画像をご確認ください。");
+      } else {
+        showMessage("", "");
+      }
       // OCR結果を下書きとして保持する（画面更新でAPI呼び出し分の結果が失われないように）
       saveDraft();
       await putImage(DRAFT_IMAGE_ID, currentImage).catch(() => {});
