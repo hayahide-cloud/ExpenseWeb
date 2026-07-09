@@ -239,16 +239,35 @@
   }
   .file-button input { display: none; }
   #transit-label { margin-top: 10px; }
-  /* 貼り付けのヒントはPC（ホバー可能な端末）でのみ表示する。スマホでは無関係のため */
-  .paste-hint { display: none; }
+  /* 貼り付けヒント・画面キャプチャはPC（ホバー可能な端末）でのみ表示する。
+     スマホでは無関係（getDisplayMediaはiOS Safari非対応）のため */
+  .paste-hint, #screencap-btn { display: none; }
   @media (hover: hover) and (pointer: fine) {
     .paste-hint { display: block; }
+    #screencap-btn { display: block; }
   }
-  .file-button.busy { pointer-events: none; opacity: 0.6; }
-  /* 連結結果の確認中は、撮影・取込の各ボタンを隠して確認に集中させる */
+  /* 画面キャプチャ中のプレビュー映像 */
+  #screencap-video {
+    display: block;
+    width: 100%;
+    max-height: 45vh;
+    object-fit: contain;
+    background: #000;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  /* 連結結果の確認中・画面キャプチャ中は、取込の各入口を隠して作業に集中させる */
   #capture-step.transit-previewing > h2,
-  #capture-step.transit-previewing .file-button,
-  #capture-step.transit-previewing #manual-btn { display: none; }
+  #capture-step.transit-previewing > .file-button,
+  #capture-step.transit-previewing > .paste-hint,
+  #capture-step.transit-previewing > #screencap-btn,
+  #capture-step.transit-previewing > #manual-btn,
+  #capture-step.screencapping > h2,
+  #capture-step.screencapping > .file-button,
+  #capture-step.screencapping > .paste-hint,
+  #capture-step.screencapping > #screencap-btn,
+  #capture-step.screencapping > #manual-btn { display: none; }
+  .file-button.busy { pointer-events: none; opacity: 0.6; }
   #transit-preview-img {
     display: block;
     width: 100%;
@@ -557,7 +576,21 @@
       </label>
       <!-- PC向けの操作ヒント。タッチ端末（スマホ）では非表示 -->
       <p class="note paste-hint" style="text-align: center;">コピーした画像を Ctrl+V（⌘V）で貼り付けても取り込めます</p>
+      <!-- PC限定: 画面キャプチャ（getDisplayMedia）で別タブの経路画面を1ページずつ取り込み、
+           既存の重なり連結エンジンでスクロールスクショ相当の1枚に繋ぐ -->
+      <button id="screencap-btn" class="ghost">🖥️ 画面キャプチャで取込（PC）</button>
       <button id="manual-btn" class="ghost">手入力で追加</button>
+      <div id="screencap-panel" class="hidden">
+        <h2>画面キャプチャで取込</h2>
+        <video id="screencap-video" autoplay muted playsinline></video>
+        <p class="note" style="text-align: center;">
+          共有中のタブで経路を1画面ずつスクロールしながら「このページを追加」を押してください
+          （現在 <span id="screencap-count">0</span> ページ）
+        </p>
+        <button id="screencap-add-btn">➕ このページを追加</button>
+        <button id="screencap-done-btn">連結して確認へ</button>
+        <button id="screencap-cancel-btn" class="ghost">キャンセル</button>
+      </div>
       <!-- 交通費: 連結結果の確認ステップ。結合した画像を確認してから「解析する」で
            OCRを実行する（連結に問題がある場合にAPI呼び出しを無駄にしないため） -->
       <div id="transit-preview" class="hidden">
@@ -737,7 +770,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.62 交通費: 画像のコピペ取込（PC向け）に対応";
+const APP_VERSION = "2026-07-09.63 画面キャプチャでのスクロールスクショ取込（PC限定）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1637,25 +1670,18 @@ function findOverlap(prevCanvas, curCanvas) {
   if (candidates.length === 0) return null;
 
   // 検証: アプリ画面には同一デザインのUI部品が繰り返し現れるため、帯だけの一致では
-  // 間違った位置にピクセル一致してしまうことがある。候補が示すずれ量で重なり範囲
-  // 全体を照合し、範囲全体が一致する候補だけを採用する。
-  // 重なりが浅く検証できる範囲が無い場合のみ、帯の一致スコアが最良の候補を信じる
-  let bestValidated = null;
-  let bestShallow = null;
+  // 間違った位置にピクセル一致してしまうことがある（無地＋罫線だけの帯も同様）。
+  // 候補が示すずれ量で重なり範囲全体を照合し、全体が一致した候補だけを採用する。
+  // 検証できるだけの重なりが無い候補は採用しない（誤結合より単純連結の方が安全。
+  // 真の重なりは強いJPEG劣化込みでも検証スコア1前後＝実データで0.3〜0.8を実測）
+  let best = null;
   for (const c of candidates) {
     const v = validateOffset(prevFull, curFull, c.prevY, c.curY);
-    if (v.span >= 40) {
-      if (v.score <= 6 && (!bestValidated || v.score < bestValidated.v)) {
-        bestValidated = { prevY: c.prevY, curY: c.curY, v: v.score };
-      }
-    } else if (!bestShallow || c.refineScore < bestShallow.refineScore) {
-      bestShallow = c;
+    if (v.span >= 40 && v.score <= 3 && (!best || v.score < best.v)) {
+      best = { prevY: c.prevY, curY: c.curY, v: v.score };
     }
   }
-  // validated: 重なり範囲全体の照合を通過した候補か（通過していれば位置の信頼度が高い）
-  if (bestValidated) return { prevY: bestValidated.prevY, curY: bestValidated.curY, validated: true };
-  if (bestShallow) return { prevY: bestShallow.prevY, curY: bestShallow.curY, validated: false };
-  return null;
+  return best ? { prevY: best.prevY, curY: best.curY } : null;
 }
 
 // キャンバス全体を実解像度のままグレースケール輝度配列にする
@@ -1773,7 +1799,9 @@ function refineMatch(search, centerY, tmpl, tmplY, toReal) {
   let best = null;
   for (let y = from; y <= to; y++) {
     let sad = 0, n = 0;
-    for (let r = 0; r < stripReal; r += 2) { // 行・列とも間引いて照合（十分な画素数がある）
+    // 行は間引かない（1〜2px幅の罫線が間引いた行に載ると、白い帯同士が
+    // 「完全一致」に見えて誤結合するため）。列の間引きだけで十分速い
+    for (let r = 0; r < stripReal; r++) {
       const sBase = (y + r) * width;
       const tBase = (tmplY + r) * width;
       for (let x = 0; x < width; x += 4) {
@@ -1806,12 +1834,9 @@ function stitchCanvasesVertically(canvases) {
   let unmatchedSeams = 0;
   for (let i = 1; i < aligned.length; i++) {
     const ov = findOverlap(aligned[i - 1], aligned[i]);
-    // 全域検証を通過した候補はそのまま信頼する（スクロール量が少なく前の画像の大半が
-    // 重複しているのが正しい場合もある）。帯だけの一致（浅い重なり）は、前の画像が
-    // ほぼ消える・後の画像の大半が捨てられる位置なら誤検出とみなし単純連結にする
-    if (ov && (ov.validated ||
-        (ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2 &&
-         ov.curY < aligned[i].height * 0.75))) {
+    // findOverlapは重なり範囲全体の検証を通過した候補しか返さないため、そのまま信頼する
+    // （スクロール量が少なく、前の画像の大半が重複しているのが正しい場合もある）
+    if (ov) {
       cuts[i - 1].end = ov.prevY;
       cuts[i].start = ov.curY;
     } else {
@@ -2308,6 +2333,25 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 文字が潰れる）、証憑用には連結した1枚を使う。
   // 入口はファイル選択とクリップボード貼り付け（PC向け）の2つで、共通処理はここに集約。
   // appendがtrueなら確認ステップ表示中の追加ページとして既存の選択に連結し直す
+  // 連結して確認ステップを表示する共通処理（ファイル選択・貼り付け・画面キャプチャの終点）
+  async function presentTransitCanvases(canvases) {
+    const stitched = stitchCanvasesVertically(canvases);
+    transitCanvases = canvases;
+    transitStitchedBlob = await canvasToJpegBlob(stitched.canvas);
+    if (transitPreviewUrl) URL.revokeObjectURL(transitPreviewUrl);
+    transitPreviewUrl = URL.createObjectURL(transitStitchedBlob);
+    $("transit-preview-img").src = transitPreviewUrl;
+    $("transit-preview").classList.remove("hidden");
+    $("capture-step").classList.add("transit-previewing");
+    if (stitched.unmatchedSeams > 0) {
+      showMessage("warn",
+        `スクショの重なりを検出できなかった継ぎ目が${stitched.unmatchedSeams}カ所あります。` +
+        "その部分は共通の固定表示（バー等）だけ取り除いて縦に並べました（内容の欠落はありません）。連結結果をご確認ください。");
+    } else {
+      showMessage("", "");
+    }
+  }
+
   async function addTransitImages(files, append) {
     if (files.length === 0) return;
     if (files.some((f) => !f.type.startsWith("image/"))) {
@@ -2327,22 +2371,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         showMessage("error", "一度に取り込めるスクショは8枚までです。");
         return;
       }
-      const stitched = stitchCanvasesVertically(canvases);
-      transitCanvases = canvases;
-      transitStitchedBlob = await canvasToJpegBlob(stitched.canvas);
-      // 連結結果の確認ステップを表示する
-      if (transitPreviewUrl) URL.revokeObjectURL(transitPreviewUrl);
-      transitPreviewUrl = URL.createObjectURL(transitStitchedBlob);
-      $("transit-preview-img").src = transitPreviewUrl;
-      $("transit-preview").classList.remove("hidden");
-      $("capture-step").classList.add("transit-previewing");
-      if (stitched.unmatchedSeams > 0) {
-        showMessage("warn",
-          `スクショの重なりを検出できなかった継ぎ目が${stitched.unmatchedSeams}カ所あります。` +
-          "その部分は共通の固定表示（バー等）だけ取り除いて縦に並べました（内容の欠落はありません）。連結結果をご確認ください。");
-      } else {
-        showMessage("", "");
-      }
+      await presentTransitCanvases(canvases);
     } catch (err) {
       resetTransitPreview();
       showMessage("error", err.message);
@@ -2358,12 +2387,96 @@ document.addEventListener("DOMContentLoaded", async () => {
     await addTransitImages(files, false);
   });
 
+  // ===== 画面キャプチャでの取込（PC限定） =====
+  // getDisplayMediaで別タブ（Googleマップ等）の映像を取得し、利用者がスクロールしながら
+  // 「このページを追加」で1画面ずつ取り込む。フレームは既存の重なり連結エンジンで
+  // 1枚に繋がるため、スクロールスクリーンショット相当の証憑画像が作れる。
+  // iOS Safariは非対応のため、ボタン自体をPC（対応ブラウザ）でのみ表示する
+  let screencapStream = null;
+  let screencapCanvases = [];
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    $("screencap-btn").classList.add("hidden");
+  }
+
+  function stopScreencap() {
+    if (screencapStream) {
+      screencapStream.getTracks().forEach((t) => t.stop());
+      screencapStream = null;
+    }
+    $("screencap-video").srcObject = null;
+    $("screencap-panel").classList.add("hidden");
+    $("capture-step").classList.remove("screencapping");
+  }
+
+  $("screencap-btn").addEventListener("click", async () => {
+    try {
+      // selfBrowserSurface: 自分自身のタブを選択肢から除外する（自分を映しても意味がないため）
+      screencapStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true, audio: false, selfBrowserSurface: "exclude",
+      });
+    } catch {
+      return; // 共有ダイアログのキャンセル。何もしない
+    }
+    screencapCanvases = [];
+    $("screencap-count").textContent = "0";
+    $("screencap-video").srcObject = screencapStream;
+    $("screencap-panel").classList.remove("hidden");
+    $("capture-step").classList.add("screencapping");
+    // ブラウザ側の「共有を停止」で終了された場合も取込画面を閉じる
+    screencapStream.getVideoTracks()[0].addEventListener("ended", () => {
+      screencapCanvases = [];
+      stopScreencap();
+    });
+  });
+
+  // 現在の映像フレームを1ページとして取り込む
+  $("screencap-add-btn").addEventListener("click", () => {
+    const video = $("screencap-video");
+    if (!video.videoWidth) return;
+    if (screencapCanvases.length >= 8) {
+      showMessage("error", "取り込めるページは8枚までです。");
+      return;
+    }
+    const c = document.createElement("canvas");
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    c.getContext("2d").drawImage(video, 0, 0);
+    screencapCanvases.push(c);
+    $("screencap-count").textContent = String(screencapCanvases.length);
+    showToast(`${screencapCanvases.length}ページ目を追加しました`);
+  });
+
+  // 取り込んだページを連結して、通常の確認ステップへ進む
+  $("screencap-done-btn").addEventListener("click", async () => {
+    if (screencapCanvases.length === 0) {
+      showMessage("error", "先に「このページを追加」でページを取り込んでください。");
+      return;
+    }
+    const canvases = screencapCanvases;
+    screencapCanvases = [];
+    stopScreencap();
+    try {
+      await presentTransitCanvases(canvases);
+    } catch (err) {
+      resetTransitPreview();
+      showMessage("error", err.message);
+    }
+  });
+
+  $("screencap-cancel-btn").addEventListener("click", () => {
+    screencapCanvases = [];
+    stopScreencap();
+    showMessage("", "");
+  });
+
   // クリップボードからの貼り付け取込（主にPC向け。コピーした画像をCtrl+V / ⌘Vで取り込む）。
   // 取込タブ表示中で、撮影のトリミング中・明細編集中でない場合のみ反応する。
   // 確認ステップ表示中の貼り付けは「次のページの追加」として連結し直す
   document.addEventListener("paste", (e) => {
     if (!$("panel-capture").classList.contains("active")) return;
     if (document.body.classList.contains("crop-fullscreen")) return;
+    if ($("capture-step").classList.contains("screencapping")) return;
     if (!$("form-step").classList.contains("hidden")) return;
     const files = Array.from(e.clipboardData?.items ?? [])
       .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
