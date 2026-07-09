@@ -585,8 +585,12 @@
         <video id="screencap-video" autoplay muted playsinline></video>
         <p class="note" style="text-align: center;">
           共有中のタブに切り替えて、経路を<strong>ゆっくりスクロール</strong>してください。
-          画面が止まるたびに自動でページを取り込みます（現在 <span id="screencap-count">0</span> ページ）。
+          自動でページを取り込みます（現在 <span id="screencap-count">0</span> ページ）。
           最後までスクロールしたらこのタブに戻り、「連結して確認へ」を押してください
+        </p>
+        <p class="note" style="text-align: center;">
+          文字がぼやける場合は、共有中のページをブラウザのズーム（Ctrl と +）で
+          拡大してからスクロールすると鮮明に取り込めます
         </p>
         <button id="screencap-done-btn">連結して確認へ</button>
         <button id="screencap-add-btn" class="ghost">➕ 手動でこのページを追加</button>
@@ -771,7 +775,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.66 画面キャプチャ: 黒画面・無地フレームを取り込まない";
+const APP_VERSION = "2026-07-09.67 画面キャプチャの画質改善（ネイティブ解像度・幅上限拡大）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1827,7 +1831,9 @@ function refineMatch(search, centerY, tmpl, tmplY, toReal, tolerance = 1) {
 // 出力時にだけ幅1100px以下・面積14Mpx以下（iOS Safariのキャンバス上限対策）へ縮小する。
 // 戻り値: { canvas, unmatchedSeams } — unmatchedSeamsは重なりを検出できず
 // 単純連結にフォールバックした継ぎ目の数（呼び出し側で利用者への通知に使う）
-function stitchCanvasesVertically(canvases, tolerance = 1) {
+// maxWidthは出力の幅上限。スマホスクショは1100pxで十分だが、PCの画面キャプチャは
+// 幅が広く（1600px超）、1100pxまで縮小すると文字がぼやけるため広めの上限を渡す
+function stitchCanvasesVertically(canvases, tolerance = 1, maxWidth = 1100) {
   if (canvases.length === 1) return { canvas: canvases[0], unmatchedSeams: 0 };
   // 同一端末のスクショは幅が揃っている前提。異なる場合のみ最小幅へ揃える（照合精度は落ちる）
   const minWidth = Math.min(...canvases.map((c) => c.width));
@@ -1855,7 +1861,7 @@ function stitchCanvasesVertically(canvases, tolerance = 1) {
 
   const totalHeight = cuts.reduce((sum, c) => sum + (c.end - c.start), 0);
   const MAX_AREA = 14_000_000; // 上限16.7Mpxに対する安全マージン
-  let scale = Math.min(1, 1100 / minWidth);
+  let scale = Math.min(1, maxWidth / minWidth);
   if (minWidth * totalHeight * scale * scale > MAX_AREA) {
     scale = Math.sqrt(MAX_AREA / (minWidth * totalHeight));
   }
@@ -2357,11 +2363,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   // opts.tolerance: 重なり照合の許容度（画面キャプチャの映像フレームは緩め）
   // opts.sliceForOcr: trueならOCRには元ページではなく連結画像の分割を使う
   async function presentTransitCanvases(canvases, opts = {}) {
-    const stitched = stitchCanvasesVertically(canvases, opts.tolerance ?? 1);
+    const stitched = stitchCanvasesVertically(canvases, opts.tolerance ?? 1, opts.maxWidth ?? 1100);
     transitCanvases = opts.sliceForOcr
       ? sliceCanvasVertically(stitched.canvas, 1400).slice(0, 8)
       : canvases;
-    transitStitchedBlob = await canvasToJpegBlob(stitched.canvas);
+    transitStitchedBlob = await canvasToJpegBlob(stitched.canvas, opts.jpegQuality ?? 0.85);
     if (transitPreviewUrl) URL.revokeObjectURL(transitPreviewUrl);
     transitPreviewUrl = URL.createObjectURL(transitStitchedBlob);
     $("transit-preview-img").src = transitPreviewUrl;
@@ -2503,8 +2509,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("screencap-btn").addEventListener("click", async () => {
     try {
       // selfBrowserSurface: 自分自身のタブを選択肢から除外する（自分を映しても意味がないため）
+      // width/heightのidealを大きく指定し、可能な限りネイティブ解像度で取り込む
+      // （既定だとOSの表示スケーリング後の論理解像度になり、文字がぼやけることがある）
       screencapStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true, audio: false, selfBrowserSurface: "exclude",
+        video: { width: { ideal: 3840 }, height: { ideal: 2160 } },
+        audio: false,
+        selfBrowserSurface: "exclude",
       });
     } catch {
       return; // 共有ダイアログのキャンセル。何もしない
@@ -2553,7 +2563,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     screencapCanvases = [];
     stopScreencap();
     try {
-      await presentTransitCanvases(canvases, { tolerance: 2.5, sliceForOcr: true });
+      await presentTransitCanvases(canvases, {
+        tolerance: 2.5, sliceForOcr: true, maxWidth: 1920, jpegQuality: 0.92,
+      });
     } catch (err) {
       resetTransitPreview();
       showMessage("error", err.message);
