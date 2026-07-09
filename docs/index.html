@@ -705,7 +705,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-08.53 交通費: 分割スクショの複数枚選択と連結に対応";
+const APP_VERSION = "2026-07-09.54 分割スクショの重なりを検出してきれいに連結";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1529,30 +1529,162 @@ function cropAndEnhance(quality = 0.85) {
   return canvasToJpegBlob(out, quality);
 }
 
-// 複数のキャンバスを縦に連結して1枚にする（スクロールできない画面の分割スクショを
-// 1枚の証憑画像に繋ぐ用途）。幅は最大1100pxに揃え、各画像は幅に合わせて等倍縮小する。
-// 合計面積がiOS Safariのキャンバス上限(約1670万px)を超えないよう、超える場合は全体をさらに縮小する
-function stitchCanvasesVertically(canvases) {
-  if (canvases.length === 1) return canvases[0];
-  let width = Math.min(1100, Math.max(...canvases.map((c) => c.width)));
-  let totalHeight = canvases.reduce((sum, c) => sum + Math.round(c.height * (width / c.width)), 0);
-  const MAX_AREA = 14_000_000; // 上限16.7Mpxに対する安全マージン
-  if (width * totalHeight > MAX_AREA) {
-    const shrink = Math.sqrt(MAX_AREA / (width * totalHeight));
-    width = Math.floor(width * shrink);
-    totalHeight = canvases.reduce((sum, c) => sum + Math.round(c.height * (width / c.width)), 0);
-  }
+// キャンバスを指定幅に等倍縮小（拡大）した複製を返す
+function scaleCanvasToWidth(src, width) {
+  if (src.width === width) return src;
   const out = document.createElement("canvas");
   out.width = width;
-  out.height = totalHeight;
+  out.height = Math.max(1, Math.round(src.height * (width / src.width)));
+  out.getContext("2d").drawImage(src, 0, 0, out.width, out.height);
+  return out;
+}
+
+// キャンバスを幅targetWに縮小したグレースケール輝度配列にする（重なり照合用）
+function toGrayScaled(canvas, targetW) {
+  const h = Math.max(1, Math.round(canvas.height * (targetW / canvas.width)));
+  const c = document.createElement("canvas");
+  c.width = targetW;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(canvas, 0, 0, targetW, h);
+  const d = ctx.getImageData(0, 0, targetW, h).data;
+  const gray = new Float32Array(targetW * h);
+  for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+    gray[p] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  }
+  return { gray, width: targetW, height: h };
+}
+
+// 分割スクショの重なり検出。下画像(cur)の上寄りから帯（テンプレート）を数カ所切り出し、
+// 上画像(prev)の中で最も一致する縦位置を輝度差の平均(SAD)で探す。
+// 一致が見つかれば「prevはprevYまで・curはcurYから」で繋ぐと重複が消える。
+// テンプレートを画像の最上部から取らないのは、スクショ上端のステータスバー（時刻・電波）や
+// アプリの固定ヘッダーがどの画像にも同じ位置に写っていて誤マッチするため。
+//
+// 照合は2段階で行う:
+//  1. 粗探索: 幅200pxの縮小版で候補位置を絞る（縮小の位相ズレがあるため判定はしない）
+//  2. 精密照合: 実解像度で候補位置の周辺を1pxずつ照合し、本当に同じ内容かを厳しく判定する
+//     （同一端末の分割スクショは重なり部分のピクセルが一致するため、真の重なりはスコアほぼ0になる）
+// 縮小版だけで判定すると、真の重なりを位相ズレで見逃し、逆にほぼ無地の画像を誤結合してしまう
+// 戻り値は実ピクセル座標 { prevY, curY }。確信が持てなければnull（呼び出し側で単純連結にフォールバック）
+function findOverlap(prevCanvas, curCanvas) {
+  const W = 200; // 粗探索は幅200pxの縮小版で行う（速度と精度のバランス）
+  const prev = toGrayScaled(prevCanvas, W);
+  const cur = toGrayScaled(curCanvas, W);
+  const strip = 24; // テンプレートの帯の高さ（縮小版の行数）
+  const candidates = [];
+  for (const frac of [0.08, 0.15, 0.22, 0.3]) {
+    const tY = Math.round(cur.height * frac);
+    if (tY + strip > cur.height) continue;
+    // ほぼ無地（分散が小さい）の帯はどこにでも一致してしまうためスキップする
+    let sum = 0, sumSq = 0;
+    for (let r = 0; r < strip; r++) {
+      for (let x = 0; x < W; x++) {
+        const v = cur.gray[(tY + r) * W + x];
+        sum += v;
+        sumSq += v * v;
+      }
+    }
+    const n = strip * W;
+    const variance = sumSq / n - (sum / n) ** 2;
+    if (variance < 25) continue;
+
+    // prevの上部1/4は固定ヘッダーの可能性が高いため探索から外す
+    let best = null;
+    const searchStart = Math.round(prev.height * 0.25);
+    for (let y = searchStart; y + strip <= prev.height; y++) {
+      let sad = 0;
+      for (let r = 0; r < strip; r++) {
+        const pBase = (y + r) * W;
+        const cBase = (tY + r) * W;
+        for (let x = 0; x < W; x++) sad += Math.abs(prev.gray[pBase + x] - cur.gray[cBase + x]);
+      }
+      const score = sad / n;
+      if (!best || score < best.score) best = { score, scaledPrevY: y, scaledCurY: tY };
+    }
+    // 粗探索は緩めに通す（縮小の位相ズレでスコアが悪化していても精密照合で拾えるように）
+    if (best && best.score <= 12) candidates.push(best);
+  }
+  if (candidates.length === 0) return null;
+  return refineOverlap(prevCanvas, curCanvas, candidates, prevCanvas.width / W);
+}
+
+// 精密照合: 粗探索の候補位置の周辺（±縮小2行分）を実解像度で1pxずつ照合する。
+// 真の重なりはピクセルがほぼ一致するため、平均輝度差の閾値を厳しくして誤結合を防ぐ
+function refineOverlap(prevCanvas, curCanvas, candidates, toReal) {
+  const width = prevCanvas.width;
+  const prevData = prevCanvas.getContext("2d").getImageData(0, 0, width, prevCanvas.height).data;
+  const curData = curCanvas.getContext("2d").getImageData(0, 0, width, curCanvas.height).data;
+  const lum = (d, i) => d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  const stripReal = Math.round(24 * toReal);
+  let best = null;
+  for (const cand of candidates) {
+    const curY = Math.round(cand.scaledCurY * toReal);
+    if (curY + stripReal > curCanvas.height) continue;
+    const center = Math.round(cand.scaledPrevY * toReal);
+    const win = Math.ceil(2 * toReal);
+    const from = Math.max(0, center - win);
+    const to = Math.min(prevCanvas.height - stripReal, center + win);
+    for (let y = from; y <= to; y++) {
+      let sad = 0, n = 0;
+      for (let r = 0; r < stripReal; r += 2) { // 行・列とも間引いて照合（十分な画素数がある）
+        const pBase = ((y + r) * width) * 4;
+        const cBase = ((curY + r) * width) * 4;
+        for (let x = 0; x < width; x += 4) {
+          sad += Math.abs(lum(prevData, pBase + x * 4) - lum(curData, cBase + x * 4));
+          n++;
+        }
+      }
+      const score = sad / n;
+      if (!best || score < best.score) best = { score, prevY: y, curY };
+    }
+  }
+  if (!best || best.score > 4) return null;
+  return { prevY: best.prevY, curY: best.curY };
+}
+
+// 複数のキャンバスを縦に連結して1枚にする(スクロールできない画面の分割スクショを
+// 1枚の証憑画像に繋ぐ用途)。連続する2枚の重なりをfindOverlapで検出し、重複部分を
+// 重ねて自然に繋ぐ。検出できなかった継ぎ目はそのまま縦に並べる。
+// 重なり照合は元解像度のピクセル一致を利用するため、切り出しまでは元解像度のまま行い、
+// 出力時にだけ幅1100px以下・面積14Mpx以下（iOS Safariのキャンバス上限対策）へ縮小する
+function stitchCanvasesVertically(canvases) {
+  if (canvases.length === 1) return canvases[0];
+  // 同一端末のスクショは幅が揃っている前提。異なる場合のみ最小幅へ揃える（照合精度は落ちる）
+  const minWidth = Math.min(...canvases.map((c) => c.width));
+  const aligned = canvases.map((c) => scaleCanvasToWidth(c, minWidth));
+
+  // 各画像の描画範囲（重なり分を切り落とした後のsrc範囲）を決める
+  const cuts = aligned.map((c) => ({ start: 0, end: c.height }));
+  for (let i = 1; i < aligned.length; i++) {
+    const ov = findOverlap(aligned[i - 1], aligned[i]);
+    // 検出位置が浅すぎて前の画像がほぼ消える場合は誤検出とみなし単純連結にする
+    if (ov && ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2) {
+      cuts[i - 1].end = ov.prevY;
+      cuts[i].start = ov.curY;
+    }
+  }
+
+  const totalHeight = cuts.reduce((sum, c) => sum + (c.end - c.start), 0);
+  const MAX_AREA = 14_000_000; // 上限16.7Mpxに対する安全マージン
+  let scale = Math.min(1, 1100 / minWidth);
+  if (minWidth * totalHeight * scale * scale > MAX_AREA) {
+    scale = Math.sqrt(MAX_AREA / (minWidth * totalHeight));
+  }
+
+  const out = document.createElement("canvas");
+  out.width = Math.floor(minWidth * scale);
+  out.height = Math.floor(totalHeight * scale);
   const ctx = out.getContext("2d");
   ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, width, totalHeight);
-  let y = 0;
-  for (const c of canvases) {
-    const h = Math.round(c.height * (width / c.width));
-    ctx.drawImage(c, 0, y, width, h);
-    y += h;
+  ctx.fillRect(0, 0, out.width, out.height);
+  let y = 0; // 貼り付け位置は誤差が累積しないようfloatで持ち、描画時にだけ丸める
+  for (let i = 0; i < aligned.length; i++) {
+    const srcH = cuts[i].end - cuts[i].start;
+    if (srcH <= 0) continue;
+    const destH = srcH * scale;
+    ctx.drawImage(aligned[i], 0, cuts[i].start, minWidth, srcH, 0, Math.round(y), out.width, Math.ceil(destH));
+    y += destH;
   }
   return out;
 }
@@ -2012,11 +2144,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     label.classList.add("busy");
     textEl.innerHTML = '<span class="spinner"></span>運賃を解析中...';
     try {
+      // 連結時の重なり検出は元解像度のピクセル一致を利用するため、縮小せずに読み込む
+      // （3600pxはiOS Safariのキャンバス面積上限に収まる安全値。スマホのスクショは通常これ以下）
       const canvases = [];
-      for (const f of files) canvases.push(await loadCanvasFromFile(f, 1800));
+      for (const f of files) canvases.push(await loadCanvasFromFile(f, 3600));
       currentImage = await canvasToJpegBlob(stitchCanvasesVertically(canvases));
+      // OCRへは各ページを1800pxに縮小して個別に渡す
       const dataUrls = [];
-      for (const c of canvases) dataUrls.push(await canvasToJpegBlob(c).then(blobToDataUrl));
+      for (const c of canvases) dataUrls.push(await canvasToJpegBlob(downscaleCanvas(c, 1800)).then(blobToDataUrl));
       const result = await analyzeTransitImage(dataUrls);
       editingId = null;
       openForm(result);
