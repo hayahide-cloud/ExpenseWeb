@@ -775,7 +775,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.67 画面キャプチャの画質改善（ネイティブ解像度・幅上限拡大）";
+const APP_VERSION = "2026-07-09.68 スクショ連結を原寸のまま保存（縮小と再圧縮を抑制）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1831,9 +1831,9 @@ function refineMatch(search, centerY, tmpl, tmplY, toReal, tolerance = 1) {
 // 出力時にだけ幅1100px以下・面積14Mpx以下（iOS Safariのキャンバス上限対策）へ縮小する。
 // 戻り値: { canvas, unmatchedSeams } — unmatchedSeamsは重なりを検出できず
 // 単純連結にフォールバックした継ぎ目の数（呼び出し側で利用者への通知に使う）
-// maxWidthは出力の幅上限。スマホスクショは1100pxで十分だが、PCの画面キャプチャは
-// 幅が広く（1600px超）、1100pxまで縮小すると文字がぼやけるため広めの上限を渡す
-function stitchCanvasesVertically(canvases, tolerance = 1, maxWidth = 1100) {
+// maxWidthは出力の幅上限。iPhoneスクショ(幅1290px)やPC画面キャプチャを縮小せず
+// 原寸のまま残せる値にしている（縮小＋再圧縮は文字のぼけの原因になる）
+function stitchCanvasesVertically(canvases, tolerance = 1, maxWidth = 1920) {
   if (canvases.length === 1) return { canvas: canvases[0], unmatchedSeams: 0 };
   // 同一端末のスクショは幅が揃っている前提。異なる場合のみ最小幅へ揃える（照合精度は落ちる）
   const minWidth = Math.min(...canvases.map((c) => c.width));
@@ -2363,11 +2363,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // opts.tolerance: 重なり照合の許容度（画面キャプチャの映像フレームは緩め）
   // opts.sliceForOcr: trueならOCRには元ページではなく連結画像の分割を使う
   async function presentTransitCanvases(canvases, opts = {}) {
-    const stitched = stitchCanvasesVertically(canvases, opts.tolerance ?? 1, opts.maxWidth ?? 1100);
+    const stitched = stitchCanvasesVertically(canvases, opts.tolerance ?? 1);
     transitCanvases = opts.sliceForOcr
       ? sliceCanvasVertically(stitched.canvas, 1400).slice(0, 8)
       : canvases;
-    transitStitchedBlob = await canvasToJpegBlob(stitched.canvas, opts.jpegQuality ?? 0.85);
+    // 文字中心のスクショは高めの品質で保存する（0.85だと文字周りの圧縮ノイズが見える）
+    transitStitchedBlob = await canvasToJpegBlob(stitched.canvas, 0.92);
     if (transitPreviewUrl) URL.revokeObjectURL(transitPreviewUrl);
     transitPreviewUrl = URL.createObjectURL(transitStitchedBlob);
     $("transit-preview-img").src = transitPreviewUrl;
@@ -2563,9 +2564,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     screencapCanvases = [];
     stopScreencap();
     try {
-      await presentTransitCanvases(canvases, {
-        tolerance: 2.5, sliceForOcr: true, maxWidth: 1920, jpegQuality: 0.92,
-      });
+      await presentTransitCanvases(canvases, { tolerance: 2.5, sliceForOcr: true });
     } catch (err) {
       resetTransitPreview();
       showMessage("error", err.message);
