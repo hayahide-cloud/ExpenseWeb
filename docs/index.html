@@ -775,7 +775,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.68 スクショ連結を原寸のまま保存（縮小と再圧縮を抑制）";
+const APP_VERSION = "2026-07-09.69 浅い重なりの連結を条件付きで復活";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1668,28 +1668,39 @@ function findOverlap(prevCanvas, curCanvas, tolerance = 1) {
   for (const cand of matchStrips(cur, prev, [0.08, 0.15, 0.22, 0.3, 0.4], 0.25, 1.0)) {
     const tmplY = Math.round(cand.tmplY * toReal);
     const r = refineMatch(prevFull, Math.round(cand.searchY * toReal), curFull, tmplY, toReal, tolerance);
-    if (r) candidates.push({ prevY: r.y, curY: tmplY, refineScore: r.score });
+    if (r) candidates.push({ prevY: r.y, curY: tmplY, refineScore: r.score, tmplVariance: r.tmplVariance });
   }
   for (const cand of matchStrips(prev, cur, [0.6, 0.68, 0.76, 0.84], 0.05, 0.75)) {
     const tmplY = Math.round(cand.tmplY * toReal);
     const r = refineMatch(curFull, Math.round(cand.searchY * toReal), prevFull, tmplY, toReal, tolerance);
-    if (r) candidates.push({ prevY: tmplY, curY: r.y, refineScore: r.score });
+    if (r) candidates.push({ prevY: tmplY, curY: r.y, refineScore: r.score, tmplVariance: r.tmplVariance });
   }
   if (candidates.length === 0) return null;
 
   // 検証: アプリ画面には同一デザインのUI部品が繰り返し現れるため、帯だけの一致では
   // 間違った位置にピクセル一致してしまうことがある（無地＋罫線だけの帯も同様）。
-  // 候補が示すずれ量で重なり範囲全体を照合し、全体が一致した候補だけを採用する。
-  // 検証できるだけの重なりが無い候補は採用しない（誤結合より単純連結の方が安全。
-  // 真の重なりは強いJPEG劣化込みでも検証スコア1前後＝実データで0.3〜0.8を実測）
-  let best = null;
+  // 候補が示すずれ量で重なり範囲全体を照合し、全体が一致した候補を最優先で採用する。
+  // （真の重なりは強いJPEG劣化込みでも検証スコア1前後＝実データで0.3〜0.8を実測）
+  let bestValidated = null;
+  let bestShallow = null;
   for (const c of candidates) {
     const v = validateOffset(prevFull, curFull, c.prevY, c.curY);
-    if (v.span >= 40 && v.score <= 3 * tolerance && (!best || v.score < best.v)) {
-      best = { prevY: c.prevY, curY: c.curY, v: v.score };
+    if (v.span >= 40) {
+      if (v.score <= 3 * tolerance && (!bestValidated || v.score < bestValidated.v)) {
+        bestValidated = { prevY: c.prevY, curY: c.curY, v: v.score };
+      }
+    } else if (c.refineScore <= 0.8 && c.tmplVariance >= 300 &&
+               (!bestShallow || c.refineScore < bestShallow.refineScore)) {
+      // 浅い重なり（スクロール量がほぼ1画面分で、全域検証ができる範囲が無い）は、
+      // 「帯に十分な内容がある」かつ「ほぼピクセル完全一致」の場合だけ採用する。
+      // 無地＋罫線程度の帯の偶然の一致はこの条件では通らない（許容度による緩和もしない）
+      bestShallow = c;
     }
   }
-  return best ? { prevY: best.prevY, curY: best.curY } : null;
+  // validated: 重なり範囲全体の照合を通過したか。浅い一致は呼び出し側で追加のガードをかける
+  if (bestValidated) return { prevY: bestValidated.prevY, curY: bestValidated.curY, validated: true };
+  if (bestShallow) return { prevY: bestShallow.prevY, curY: bestShallow.curY, validated: false };
+  return null;
 }
 
 // キャンバス全体を実解像度のままグレースケール輝度配列にする
@@ -1801,6 +1812,19 @@ function refineMatch(search, centerY, tmpl, tmplY, toReal, tolerance = 1) {
   const width = search.width;
   const stripReal = Math.round(16 * toReal);
   if (tmplY + stripReal > tmpl.height) return null;
+  // テンプレート帯の実解像度での輝度分散。浅い一致（全域検証ができない候補）を
+  // 採用してよいかの判定に使う（ほぼ無地の帯は偶然一致しやすく信用できない）
+  let tSum = 0, tSumSq = 0, tN = 0;
+  for (let r = 0; r < stripReal; r++) {
+    const tBase = (tmplY + r) * width;
+    for (let x = 0; x < width; x += 4) {
+      const v = tmpl.gray[tBase + x];
+      tSum += v;
+      tSumSq += v * v;
+      tN++;
+    }
+  }
+  const tmplVariance = tSumSq / tN - (tSum / tN) ** 2;
   const win = Math.ceil(2 * toReal);
   const from = Math.max(0, centerY - win);
   const to = Math.min(search.height - stripReal, centerY + win);
@@ -1821,7 +1845,7 @@ function refineMatch(search, centerY, tmpl, tmplY, toReal, tolerance = 1) {
     if (!best || score < best.score) best = { score, y };
   }
   if (!best || best.score > 4 * tolerance) return null;
-  return best;
+  return { ...best, tmplVariance };
 }
 
 // 複数のキャンバスを縦に連結して1枚にする(スクロールできない画面の分割スクショを
@@ -1844,9 +1868,12 @@ function stitchCanvasesVertically(canvases, tolerance = 1, maxWidth = 1920) {
   let unmatchedSeams = 0;
   for (let i = 1; i < aligned.length; i++) {
     const ov = findOverlap(aligned[i - 1], aligned[i], tolerance);
-    // findOverlapは重なり範囲全体の検証を通過した候補しか返さないため、そのまま信頼する
-    // （スクロール量が少なく、前の画像の大半が重複しているのが正しい場合もある）
-    if (ov) {
+    // 全域検証を通過した候補はそのまま信頼する（スクロール量が少なく前の画像の大半が
+    // 重複しているのが正しい場合もある）。浅い一致（validated=false）は、前の画像が
+    // ほぼ消える・後の画像の大半が捨てられる不自然な位置なら誤検出とみなして使わない
+    if (ov && (ov.validated ||
+        (ov.prevY - cuts[i - 1].start > aligned[i - 1].height * 0.2 &&
+         ov.curY < aligned[i].height * 0.75))) {
       cuts[i - 1].end = ov.prevY;
       cuts[i].start = ov.curY;
     } else {
