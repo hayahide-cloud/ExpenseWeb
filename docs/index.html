@@ -27,6 +27,7 @@
     --warn-bg: #3a2c10;
     --warn-text: #fbbf24;
     --ok: #34d399;
+    --transit: #2dd4bf; /* 一覧の交通費の色分け（ティール） */
     --danger: #f87171;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -461,7 +462,23 @@
     padding: 12px 14px;
     margin-bottom: 10px;
     cursor: pointer;
+    /* 種別の色分け: 購入費・立替費は紫（テーマ色）、交通費はティール。
+       左端の色帯＋種別バッジで一覧を見ただけで区別できるようにする */
+    border-left: 3px solid var(--accent);
   }
+  .receipt-item.transit { border-left-color: var(--transit); }
+  .receipt-item .type-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.6;
+    padding: 0 8px;
+    border-radius: 999px;
+    margin-bottom: 6px;
+    color: var(--accent-soft);
+    border: 1px solid currentColor;
+  }
+  .receipt-item.transit .type-badge { color: var(--transit); }
   .receipt-item .row1 { display: flex; justify-content: space-between; align-items: baseline; }
   /* 主見出し（依頼内容・用途）は入力時の改行をそのまま表示する(pre-line) */
   .receipt-item .vendor { font-weight: 600; font-size: 15px; white-space: pre-line; }
@@ -798,7 +815,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.81 交通費の行程から徒歩区間を除外";
+const APP_VERSION = "2026-07-10.82 一覧で購入費/交通費を色分け表示";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2347,11 +2364,18 @@ function renderList() {
   const list = $("receipt-list");
   list.innerHTML = "";
   for (const r of rows) {
+    // 種別（購入費・立替費／交通費）が一覧で見分けられるよう、勘定科目が交通費の行は
+    // 色帯・バッジ・アイコンをティール系に切り替える（取込タブの2大項目と対応）
+    const isTransit = r.category === "交通費";
     const item = document.createElement("div");
-    item.className = "receipt-item";
+    item.className = "receipt-item" + (isTransit ? " transit" : "");
     // 行全体をタップすると編集画面を開く。申請/画像保存ボタンは各自でstopPropagationし、
     // ボタン操作が誤って編集画面遷移も引き起こさないようにする
     item.addEventListener("click", () => startEdit(r));
+
+    const badge = document.createElement("span");
+    badge.className = "type-badge";
+    badge.textContent = isTransit ? "🚃 交通費" : "🧾 購入・立替";
 
     // 依頼内容・用途（備考）は「何の会議・案件か」を最優先で見返す用途のフィールドのため、
     // 未記入でも「未設定」と明示して常に主見出しに置く。支払先はメタ情報側へ回す
@@ -2391,7 +2415,7 @@ function renderList() {
     meta.textContent = metaLines.join("\n");
     row2.append(meta);
 
-    item.append(row1, row2);
+    item.append(badge, row1, row2);
     if (r.needs_review) {
       const review = document.createElement("div");
       review.className = "review";
