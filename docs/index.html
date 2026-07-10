@@ -584,8 +584,9 @@
         <h2>画面キャプチャで取込</h2>
         <video id="screencap-video" autoplay muted playsinline></video>
         <p class="note" style="text-align: center;">
-          共有中のタブに切り替えて、経路を<strong>ゆっくりスクロール</strong>してください。
-          自動でページを取り込みます（現在 <span id="screencap-count">0</span> ページ）。
+          共有中のタブに切り替えて<strong>1〜2秒待ってから</strong>、経路を
+          <strong>ゆっくりスクロール</strong>してください。自動でページを取り込みます
+          （現在 <span id="screencap-count">0</span> ページ）。
           最後までスクロールしたらこのタブに戻り、「連結して確認へ」を押してください
         </p>
         <p class="note" style="text-align: center;">
@@ -775,7 +776,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.73 画面キャプチャ: タブが裏でも取込が止まらないように";
+const APP_VERSION = "2026-07-09.74 画面キャプチャ: 最初の画面の取りこぼしを修正";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2630,17 +2631,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (screencapCanvases.length > 0) {
       const first = screencapCanvases[0];
       if (frame.width !== first.width || frame.height !== first.height) {
+        // 解像度の変化は「裏で低解像度キャプチャ→共有タブを表に出して高解像度化」で
+        // ほぼ必ず起きる。低解像度時代のページは破棄し、今見えているこのフレームを
+        // 新しい1ページ目としてすぐ取り込む（破棄だけして戻ると、利用者がその間に
+        // スクロールを始めた場合に最初の画面が失われてしまう）
         screencapSizeMismatch++;
-        if (screencapSizeMismatch >= 5) {
-          screencapCanvases = [];
-          screencapGrays = [];
-          screencapSizeMismatch = 0;
-          $("screencap-count").textContent = "0";
-          showToast("映像の解像度が変わったため、取り込みをやり直します");
-        }
-        return;
+        if (screencapSizeMismatch < 2) return; // 一過性の乱れは無視
+        screencapCanvases = [];
+        screencapGrays = [];
+        screencapSizeMismatch = 0;
+        $("screencap-count").textContent = "0";
+        showToast("解像度が変わったため、この画面から取り込み直します");
+        // このままフォールスルーして現在のフレームを1ページ目として判定する
+      } else {
+        screencapSizeMismatch = 0;
       }
-      screencapSizeMismatch = 0;
     }
     const gray = toGrayScaled(frame, 100);
     // 共有開始直後・タブ切り替えの瞬間などの黒画面／無地フレームは内容が無いため
