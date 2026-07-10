@@ -274,6 +274,23 @@
     padding-top: 18px;
     border-top: 1px solid var(--border);
   }
+  /* 取込タブの大項目も一覧の色分けと同じ配色にする
+     （購入費・立替費=アンバー、交通費=ティール）。
+     見出し・選択ボタン（枠と文字）・手入力ボタンの文字に適用する */
+  #capture-step .section-purchase { color: var(--purchase); }
+  #capture-step .section-transit { color: var(--transit); }
+  #capture-step .file-button.purchase {
+    border-color: var(--purchase);
+    color: var(--purchase);
+    background: rgba(251, 191, 36, 0.07);
+  }
+  #capture-step #transit-label {
+    border-color: var(--transit);
+    color: var(--transit);
+    background: rgba(45, 212, 191, 0.07);
+  }
+  #manual-btn { color: var(--purchase); }
+  #transit-manual-btn, #screencap-btn { color: var(--transit); }
   .file-button.busy { pointer-events: none; opacity: 0.6; }
   #transit-preview-img {
     display: block;
@@ -595,8 +612,8 @@
 
     <div id="capture-step" class="card">
       <!-- 取込の入口は「購入費・立替費」と「交通費」の2つの大項目に分ける -->
-      <h2>購入費・立替費の精算</h2>
-      <label class="file-button">
+      <h2 class="section-purchase">購入費・立替費の精算</h2>
+      <label class="file-button purchase">
         📷 タップして撮影 / 画像を選択
         <!-- capture属性を付けるとカメラが強制起動してしまうため付けない。
              iOSでは「フォトライブラリ/写真を撮る/ファイルを選択」の選択メニューが表示される -->
@@ -607,7 +624,7 @@
       </label>
       <button id="manual-btn" class="ghost">手入力で追加</button>
 
-      <h2 class="section-heading">交通費の精算</h2>
+      <h2 class="section-heading section-transit">交通費の精算</h2>
       <!-- 交通費: Googleマップ等の経路検索のスクショから運賃を読み取る。
            スクショは紙と違い傾き・影が無いため、トリミング編集をスキップして直接OCRする -->
       <!-- multiple: スクロールスクショが撮れない画面用に、分割スクショを複数枚まとめて
@@ -831,7 +848,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.85 サブタイトルの表記を修正";
+const APP_VERSION = "2026-07-10.86 取込タブも購入費/交通費で色分け";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
