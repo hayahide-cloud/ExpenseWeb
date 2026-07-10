@@ -589,7 +589,18 @@
           （現在 <span id="screencap-count">0</span> ページ）。
           最後までスクロールしたらこのタブに戻り、「連結して確認へ」を押してください
         </p>
-        <p class="note" style="text-align: center;">
+        <!-- Captured Surface Control対応ブラウザ（Chrome 136+）のみ表示。
+             共有中のタブを段階ズームで150%まで拡大し、あわせてプレビュー上の
+             ホイール操作を共有タブへ転送する（タブを切り替えずにスクロールできる）。
+             ブラウザの仕様上、ユーザーのクリックを起点にしないと呼べないため
+             自動実行はできず、ボタンとして置く -->
+        <button id="screencap-zoom-btn" class="ghost">🔍 共有タブを150%に拡大</button>
+        <p class="note" id="screencap-zoom-note" style="text-align: center;">
+          拡大すると文字が鮮明に取り込めます（初回はブラウザの許可が必要）。
+          拡大後は<strong>プレビューの上でマウスホイール</strong>を回すと、
+          タブを切り替えずに共有中のページをスクロールできます
+        </p>
+        <p class="note" id="screencap-manual-zoom-hint" style="text-align: center;">
           文字がぼやける場合は、共有中のページをブラウザのズーム（Ctrl と +）で
           拡大してからスクロールすると鮮明に取り込めます
         </p>
@@ -776,7 +787,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.75 連結ボタンに「結合中...」表示";
+const APP_VERSION = "2026-07-10.76 共有タブの150%拡大ボタン（Chrome）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2548,10 +2559,23 @@ document.addEventListener("DOMContentLoaded", async () => {
   let screencapGrays = []; // 取込済み各ページの縮小グレースケール（自動取込の変化判定用）
   let screencapTimer = null;
   let screencapReader = null; // MediaStreamTrackProcessorのフレーム読み取り
+  let screencapController = null; // Captured Surface Control（共有タブの拡大・スクロール転送）
+  let screencapWheelForwarding = false;
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
     $("screencap-btn").classList.add("hidden");
   }
+
+  // Captured Surface Control（Chrome 136+）: 共有中の「タブ」の拡大とホイール転送。
+  // 対応ブラウザでは拡大ボタンを出し、手動ズーム（Ctrl +）の案内は引っ込める
+  const SCREENCAP_ZOOM_TARGET = 150;
+  const screencapZoomSupported = !!(
+    window.CaptureController &&
+    CaptureController.prototype.increaseZoomLevel &&
+    CaptureController.prototype.forwardWheel
+  );
+  $(screencapZoomSupported ? "screencap-manual-zoom-hint" : "screencap-zoom-btn").classList.add("hidden");
+  if (!screencapZoomSupported) $("screencap-zoom-note").classList.add("hidden");
 
   function stopScreencap() {
     if (screencapTimer) {
@@ -2567,6 +2591,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       screencapStream.getTracks().forEach((t) => t.stop());
       screencapStream = null;
     }
+    screencapController = null;
+    screencapWheelForwarding = false;
+    $("screencap-zoom-btn").textContent = "🔍 共有タブを150%に拡大";
     screencapGrays = [];
     $("screencap-video").srcObject = null;
     $("screencap-panel").classList.add("hidden");
@@ -2699,7 +2726,61 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  // 共有タブの拡大レベルが変わったとき: ボタン表示を現在値に更新し、拡大前に
+  // 取り込んだページは縮尺が合わず連結できないため取り込み直す
+  function onScreencapZoomChange() {
+    const level = screencapController && screencapController.zoomLevel;
+    if (level) {
+      $("screencap-zoom-btn").textContent =
+        level >= SCREENCAP_ZOOM_TARGET ? `🔍 拡大済み（${level}%）` : `🔍 共有タブを150%に拡大（現在 ${level}%）`;
+    }
+    if (screencapCanvases.length > 0) {
+      screencapCanvases = [];
+      screencapGrays = [];
+      $("screencap-count").textContent = "0";
+      showToast("拡大に合わせて、この画面から取り込み直します");
+    }
+  }
+
+  // 共有タブを150%まで段階的に拡大する。あわせてプレビュー上のホイール操作を
+  // 共有タブへ転送し、タブを切り替えずにスクロールできるようにする。
+  // どちらもブラウザの仕様でユーザーのクリックを起点にしないと呼べない
+  // （共有開始直後の自動実行は不可）ため、ボタンとして提供する。
+  // 権限確認などで途中で止まった場合も、再クリックすれば続きから拡大される
+  $("screencap-zoom-btn").addEventListener("click", async () => {
+    const c = screencapController;
+    if (!c) return;
+    try {
+      await c.forwardWheel($("screencap-video"));
+      screencapWheelForwarding = true;
+    } catch {
+      // 権限拒否など。拡大だけでも試す
+    }
+    try {
+      let guard = 0;
+      while ((c.zoomLevel ?? 0) < SCREENCAP_ZOOM_TARGET && guard++ < 10) {
+        await c.increaseZoomLevel();
+      }
+    } catch {
+      // タブ以外（ウィンドウ・画面全体）の共有では拡大できない
+      if ((c.zoomLevel ?? null) === null) {
+        showMessage("error", "拡大は「タブ」の共有でのみ使えます。共有し直すときは経路のタブを選んでください。");
+      }
+    }
+  });
+
+  // ホイール転送中は、プレビュー上のホイールでこのアプリの画面まで
+  // スクロールしてしまわないように既定動作を止める
+  $("screencap-video").addEventListener(
+    "wheel",
+    (e) => {
+      if (screencapWheelForwarding) e.preventDefault();
+    },
+    { passive: false }
+  );
+
   $("screencap-btn").addEventListener("click", async () => {
+    const controller = screencapZoomSupported ? new CaptureController() : null;
     try {
       // selfBrowserSurface: 自分自身のタブを選択肢から除外する（自分を映しても意味がないため）
       // width/heightのidealを大きく指定し、可能な限りネイティブ解像度で取り込む
@@ -2708,10 +2789,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         video: { width: { ideal: 3840 }, height: { ideal: 2160 } },
         audio: false,
         selfBrowserSurface: "exclude",
+        ...(controller ? { controller } : {}),
       });
     } catch {
       return; // 共有ダイアログのキャンセル。何もしない
     }
+    screencapController = controller;
+    if (controller) controller.addEventListener("zoomlevelchange", onScreencapZoomChange);
     screencapCanvases = [];
     screencapGrays = [];
     $("screencap-count").textContent = "0";
