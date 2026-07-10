@@ -29,6 +29,7 @@
     --ok: #34d399;
     --transit: #2dd4bf; /* 一覧の交通費の色分け（ティール） */
     --purchase: #fbbf24; /* 一覧の購入費・立替費の色分け（アンバー。テーマの紫と区別する） */
+    --hotel: #fb7185; /* 一覧の宿泊費の色分け（ローズ） */
     --danger: #f87171;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -291,6 +292,13 @@
   }
   #manual-btn { color: var(--purchase); }
   #transit-manual-btn, #screencap-btn { color: var(--transit); }
+  #capture-step .section-hotel { color: var(--hotel); }
+  #capture-step .file-button.hotel {
+    border-color: var(--hotel);
+    color: var(--hotel);
+    background: rgba(251, 113, 133, 0.07);
+  }
+  #hotel-manual-btn { color: var(--hotel); }
   .file-button.busy { pointer-events: none; opacity: 0.6; }
   #transit-preview-img {
     display: block;
@@ -486,6 +494,7 @@
     border-left: 3px solid var(--purchase);
   }
   .receipt-item.transit { border-left-color: var(--transit); }
+  .receipt-item.hotel { border-left-color: var(--hotel); }
   .receipt-item .type-badge {
     display: inline-block;
     font-size: 11px;
@@ -498,6 +507,7 @@
     border: 1px solid currentColor;
   }
   .receipt-item.transit .type-badge { color: var(--transit); }
+  .receipt-item.hotel .type-badge { color: var(--hotel); }
   .receipt-item .row1 { display: flex; justify-content: space-between; align-items: baseline; }
   /* 主見出し（依頼内容・用途）はアイコンと本文を分けたflexにして、
      2行以上になったとき（手動改行・自動折り返しとも）に2行目以降の左端が
@@ -640,6 +650,15 @@
       <button id="screencap-btn" class="ghost">🖥️ 画面キャプチャで取込（PC）</button>
       <!-- 交通費の手入力: 勘定科目を交通費・日付を今日で開く -->
       <button id="transit-manual-btn" class="ghost">手入力で追加</button>
+
+      <h2 class="section-heading section-hotel">宿泊費の精算</h2>
+      <!-- 宿泊費: 領収書の撮影フローは購入費・立替費と同一。
+           この入口から取り込んだ明細は勘定科目を宿泊費に固定する（入口が種別を決める） -->
+      <label class="file-button hotel">
+        🏨 タップして撮影 / 画像を選択
+        <input type="file" id="hotel-input" accept="image/*,video/*">
+      </label>
+      <button id="hotel-manual-btn" class="ghost">手入力で追加</button>
       <div id="screencap-panel" class="hidden">
         <h2>画面キャプチャで取込</h2>
         <video id="screencap-video" autoplay muted playsinline></video>
@@ -834,7 +853,8 @@
 "use strict";
 
 // ===== 定数（ExpenseVBA・フル構成版と同一のスキーマ・文言を維持する） =====
-const CATEGORIES = ["交通費", "会議費", "消耗品費", "交際費", "通信費", "雑費"];
+// 宿泊費は取込タブの「宿泊費の精算」導入に伴い追加（ExpenseVBA側の科目リストにも追加が必要）
+const CATEGORIES = ["交通費", "会議費", "消耗品費", "交際費", "通信費", "宿泊費", "雑費"];
 const SOURCE_MARKER = "(Shiden取込)";
 // 1〜8列目はExpenseVBAの明細シートと同一。9列目の備考は整理用メモ、10〜11列目は按分計算の
 // 記録（いずれも末尾追加なので取込互換を壊さない）
@@ -846,9 +866,19 @@ const ACTIVE_EDIT_KEY = "shiden_expense_active_edit_id";
 const DRAFT_KEY = "shiden_expense_draft";
 const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
+
+// 撮影の入口による勘定科目の固定（宿泊費の入口なら"宿泊費"、通常は""）。
+// トリミング中にリロードされても入口の種別を忘れないようlocalStorageにも持つ
+const CAPTURE_CATEGORY_KEY = "shiden_expense_capture_category";
+let receiptCategoryPreset = localStorage.getItem(CAPTURE_CATEGORY_KEY) || "";
+function setReceiptCategoryPreset(v) {
+  receiptCategoryPreset = v;
+  if (v) localStorage.setItem(CAPTURE_CATEGORY_KEY, v);
+  else localStorage.removeItem(CAPTURE_CATEGORY_KEY);
+}
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.86 取込タブも購入費/交通費で色分け";
+const APP_VERSION = "2026-07-10.87 宿泊費の精算を追加（ローズ）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -859,7 +889,7 @@ const PROMPT = [
   "date: 領収書に印字された日付（YYYY-MM-DD形式）",
   "vendor: 発行元の店舗名・会社名（手書きの宛名「様」宛先ではなく、レシート発行元を優先する）",
   "amount: 「合計」「ご請求金額」等と明記された税込合計金額（数値のみ、カンマ・円記号なし）。小計や内訳の金額と混同しない",
-  "category: 次のいずれか1つ（交通費、会議費、消耗品費、交際費、通信費、雑費）。摘要から最も近いものを選ぶ",
+  "category: 次のいずれか1つ（交通費、会議費、消耗品費、交際費、通信費、宿泊費、雑費）。摘要から最も近いものを選ぶ",
   "memo: 購入品目・利用目的の要約（20文字以内）",
   "読み取れない項目は date と vendor と category は空文字、amount は 0 にしてください。",
 ].join("\n");
@@ -2253,6 +2283,8 @@ function closeForm() {
   $("form-step").classList.add("hidden");
   $("capture-step").classList.remove("hidden");
   $("image-input").value = "";
+  $("hotel-input").value = "";
+  setReceiptCategoryPreset("");
   resetCropEditor();
   currentImage = null;
   editingId = null;
@@ -2397,18 +2429,19 @@ function renderList() {
   const list = $("receipt-list");
   list.innerHTML = "";
   for (const r of rows) {
-    // 種別（購入費・立替費／交通費）が一覧で見分けられるよう、勘定科目が交通費の行は
-    // 色帯・バッジ・アイコンをティール系に切り替える（取込タブの2大項目と対応）
+    // 種別（購入費・立替費／交通費／宿泊費）が一覧で見分けられるよう、勘定科目に応じて
+    // 色帯・バッジを切り替える（取込タブの大項目と対応。交通費=ティール、宿泊費=ローズ）
     const isTransit = r.category === "交通費";
+    const isHotel = r.category === "宿泊費";
     const item = document.createElement("div");
-    item.className = "receipt-item" + (isTransit ? " transit" : "");
+    item.className = "receipt-item" + (isTransit ? " transit" : isHotel ? " hotel" : "");
     // 行全体をタップすると編集画面を開く。申請/画像保存ボタンは各自でstopPropagationし、
     // ボタン操作が誤って編集画面遷移も引き起こさないようにする
     item.addEventListener("click", () => startEdit(r));
 
     const badge = document.createElement("span");
     badge.className = "type-badge";
-    badge.textContent = isTransit ? "🚃 交通費" : "🧾 購入・立替";
+    badge.textContent = isTransit ? "🚃 交通費" : isHotel ? "🏨 宿泊費" : "🧾 購入・立替";
 
     // 依頼内容・用途（備考）は「何の会議・案件か」を最優先で見返す用途のフィールドのため、
     // 未記入でも「未設定」と明示して常に主見出しに置く。支払先はメタ情報側へ回す
@@ -2561,16 +2594,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 画像選択（iOSの選択シートの並びをvideo/*も動画も選択できるようにしているが、
   // OCR解析は画像のみ対応のため動画が選ばれた場合はここで弾く）。
-  // 選択した画像はトリミングエディタに表示し、四隅を背景検出の結果に合わせて初期配置する
-  $("image-input").addEventListener("change", async () => {
-    const file = $("image-input").files[0];
+  // 選択した画像はトリミングエディタに表示し、四隅を背景検出の結果に合わせて初期配置する。
+  // 購入費・立替費と宿泊費で撮影フローは共通。宿泊費の入口から取り込んだ場合だけ、
+  // 解析後の勘定科目を宿泊費に固定する（categoryPresetで指定。リロードにも耐えるよう永続化）
+  async function onReceiptFileChosen(input, categoryPreset) {
+    const file = input.files[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      $("image-input").value = "";
+      input.value = "";
       resetCropEditor();
       showMessage("error", "動画は取り込めません。写真を選択してください。");
       return;
     }
+    setReceiptCategoryPreset(categoryPreset);
     try {
       cropSourceCanvas = await loadCanvasFromFile(file, 3600);
       // 選択直後の写真を下書き保存する（誤操作で画面がリロードされても撮り直しにならないように）
@@ -2583,7 +2619,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       resetCropEditor();
       showMessage("error", err.message);
     }
-  });
+  }
+  $("image-input").addEventListener("change", () => onReceiptFileChosen($("image-input"), ""));
+  $("hotel-input").addEventListener("change", () => onReceiptFileChosen($("hotel-input"), "宿泊費"));
 
   // 交通費: 経路検索スクショの取込（2段階）。
   // 1段階目: 画像を縦に連結し、結果を画面で確認してもらう。
@@ -3090,6 +3128,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("crop-cancel-btn").addEventListener("click", () => {
     resetCropEditor();
     $("image-input").value = "";
+    $("hotel-input").value = "";
+    setReceiptCategoryPreset("");
     deleteImage(CROP_DRAFT_IMAGE_ID).catch(() => {});
     showMessage("", "");
   });
@@ -3134,9 +3174,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       currentImage = await cropAndEnhance();
       const dataUrl = await blobToDataUrl(currentImage);
       const result = await analyzeImage(dataUrl);
+      // 宿泊費の入口から取り込んだ写真は、OCRの判定によらず勘定科目を宿泊費に固定する
+      if (receiptCategoryPreset) result.category = receiptCategoryPreset;
       editingId = null;
       resetCropEditor();
       $("image-input").value = "";
+      $("hotel-input").value = "";
       openForm(result);
       // 証憑画像は既定で表示にして開く（画像とOCR結果を見比べて確認する画面のため。
       // 画像保存ボタンは保存後の明細にのみ出す仕様のためここでは表示しない）
@@ -3172,6 +3215,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     currentImage = null;
     editingId = null;
     openForm({ date: todayString(), vendor: "", amount: 0, category: "交通費", memo: "" });
+    saveDraft();
+  });
+
+  // 宿泊費の手入力（証憑画像なし）: 勘定科目を宿泊費にして開く（他は購入費・立替費と同じ）
+  $("hotel-manual-btn").addEventListener("click", () => {
+    currentImage = null;
+    editingId = null;
+    openForm({ date: "", vendor: "", amount: 0, category: "宿泊費", memo: "" });
     saveDraft();
   });
 
