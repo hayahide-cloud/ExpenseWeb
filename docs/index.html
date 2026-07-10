@@ -878,7 +878,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.87 宿泊費の精算を追加（ローズ）";
+const APP_VERSION = "2026-07-10.88 交通費に距離（概算）を自動記載";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -909,6 +909,10 @@ const TRANSIT_PROMPT = [
   "電車・新幹線・バス・フェリー等の交通機関の区間だけを含め、徒歩の区間は除外する",
   "（例: 自宅→西日暮里駅が徒歩、西日暮里駅→東京駅→広島駅が電車なら [\"西日暮里駅→東京駅\", \"東京駅→広島駅\"]）。",
   "地点名は画像に表示されている名称をそのまま使い、画像に無い地点を補わない。",
+  "distance_km: 経路全体（交通機関の区間の合計）のおおよその移動距離（km、数値のみ）。",
+  "画像内に距離の記載があればそれを合算して使う。記載が無い鉄道等の区間は、",
+  "駅間の営業キロの一般知識から概算してよい（±10%程度の精度で十分）。",
+  "経路を特定できず概算に自信が持てない場合は 0 にする。",
   "推測でそれらしい値を作らず、読み取れない項目は from・to・line は空文字、amount は 0、legs は空配列にしてください。",
 ].join("\n");
 
@@ -1457,13 +1461,22 @@ async function analyzeTransitImage(dataUrls) {
     ? extracted.legs.map((s) => String(s).trim()).filter((s) => s !== "")
     : [];
   const wholeRoute = from && to ? `${from}→${to}` : "";
+  // 距離はAIの概算（画像に記載があればその値を優先する指示）のため「約」を付けて
+  // 摘要の末尾に1行で入れる。概算に自信が無い場合はモデルが0を返し、行ごと省く。
+  // 10km以上は整数、10km未満は小数1桁に丸める（概算精度に合わせた見せ方）
+  const distanceKm = parseFloat(extracted.distance_km) || 0;
+  const memoLines = legs.length > 0 ? [...legs] : wholeRoute ? [wholeRoute] : [];
+  if (distanceKm > 0) {
+    const rounded = distanceKm >= 10 ? Math.round(distanceKm) : Math.round(distanceKm * 10) / 10;
+    memoLines.push(`距離: 約${rounded}km`);
+  }
   // 経路スクショには日付が写らないことが多い。空なら当日移動の精算を想定して今日を既定にする
   return {
     date: String(extracted.date ?? "") || todayString(),
     vendor: String(extracted.line ?? "").trim(),
     amount: parseInt(extracted.amount, 10) || 0,
     category: "交通費",
-    memo: legs.length > 0 ? legs.join("\n") : wholeRoute,
+    memo: memoLines.join("\n"),
     note: "",
   };
 }
