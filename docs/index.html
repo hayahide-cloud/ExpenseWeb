@@ -776,7 +776,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-09.74 画面キャプチャ: 最初の画面の取りこぼしを修正";
+const APP_VERSION = "2026-07-09.75 連結ボタンに「結合中...」表示";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2752,14 +2752,22 @@ document.addEventListener("DOMContentLoaded", async () => {
       showMessage("error", "まだページが取り込まれていません。共有中のタブで経路をスクロールしてください。");
       return;
     }
+    const btn = $("screencap-done-btn");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>結合中...';
+    // 連結は重い同期処理で描画も止まるため、ボタンの表示変更を先に反映させてから始める
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const canvases = screencapCanvases;
     screencapCanvases = [];
-    stopScreencap();
     try {
       await presentTransitCanvases(canvases, { tolerance: 2.5, sliceForOcr: true });
     } catch (err) {
       resetTransitPreview();
       showMessage("error", err.message);
+    } finally {
+      stopScreencap();
+      btn.disabled = false;
+      btn.textContent = "連結して確認へ";
     }
   });
 
