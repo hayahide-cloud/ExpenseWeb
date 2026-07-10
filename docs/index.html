@@ -28,6 +28,7 @@
     --warn-text: #fbbf24;
     --ok: #34d399;
     --transit: #2dd4bf; /* 一覧の交通費の色分け（ティール） */
+    --purchase: #fbbf24; /* 一覧の購入費・立替費の色分け（アンバー。テーマの紫と区別する） */
     --danger: #f87171;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -462,9 +463,10 @@
     padding: 12px 14px;
     margin-bottom: 10px;
     cursor: pointer;
-    /* 種別の色分け: 購入費・立替費は紫（テーマ色）、交通費はティール。
+    /* 種別の色分け: 購入費・立替費はアンバー、交通費はティール
+       （どちらもテーマの紫と被らない色にする）。
        左端の色帯＋種別バッジで一覧を見ただけで区別できるようにする */
-    border-left: 3px solid var(--accent);
+    border-left: 3px solid var(--purchase);
   }
   .receipt-item.transit { border-left-color: var(--transit); }
   .receipt-item .type-badge {
@@ -475,7 +477,7 @@
     padding: 0 8px;
     border-radius: 999px;
     margin-bottom: 6px;
-    color: var(--accent-soft);
+    color: var(--purchase);
     border: 1px solid currentColor;
   }
   .receipt-item.transit .type-badge { color: var(--transit); }
@@ -829,7 +831,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.83 一覧の2行タイトルの字下げを整える";
+const APP_VERSION = "2026-07-10.84 購入・立替の色をアンバーに変更";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
