@@ -596,9 +596,10 @@
              自動実行はできず、ボタンとして置く -->
         <button id="screencap-zoom-btn" class="ghost">🔍 共有タブを150%に拡大</button>
         <p class="note" id="screencap-zoom-note" style="text-align: center;">
-          拡大すると文字が鮮明に取り込めます（初回はブラウザの許可が必要）。
+          共有を開始してもタブは切り替わりません。<strong>先にこのボタンで拡大してから</strong>
+          共有中のタブへ移動すると鮮明に取り込めます（初回はブラウザの許可が必要）。
           拡大後は<strong>プレビューの上でマウスホイール</strong>を回すと、
-          タブを切り替えずに共有中のページをスクロールできます
+          タブを切り替えずに共有中のページをスクロールすることもできます
         </p>
         <p class="note" id="screencap-manual-zoom-hint" style="text-align: center;">
           文字がぼやける場合は、共有中のページをブラウザのズーム（Ctrl と +）で
@@ -787,7 +788,7 @@ const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.76 共有タブの150%拡大ボタン（Chrome）";
+const APP_VERSION = "2026-07-10.77 共有開始時にタブへ自動で切り替わらない";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2780,7 +2781,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   );
 
   $("screencap-btn").addEventListener("click", async () => {
-    const controller = screencapZoomSupported ? new CaptureController() : null;
+    // CaptureControllerは拡大非対応のブラウザ（Chrome 109〜135）でも
+    // フォーカス制御のために作る
+    const controller = window.CaptureController ? new CaptureController() : null;
+    // Conditional Focus: 共有開始時に選択したタブへ自動で切り替わらないようにする。
+    // このアプリに留まったまま「150%に拡大」を押してから、自分のタイミングで
+    // 共有中のタブへ移動できるようにするため
+    if (controller && controller.setFocusBehavior) {
+      try {
+        controller.setFocusBehavior("no-focus-change");
+      } catch {
+        // 非対応・タイミング違反時は既定動作（タブへ切り替わる）のまま
+      }
+    }
     try {
       // selfBrowserSurface: 自分自身のタブを選択肢から除外する（自分を映しても意味がないため）
       // width/heightのidealを大きく指定し、可能な限りネイティブ解像度で取り込む
