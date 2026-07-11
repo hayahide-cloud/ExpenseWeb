@@ -919,7 +919,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-11.96 PDF領収書の取込に対応（pdf.js）";
+const APP_VERSION = "2026-07-11.97 証憑を全PNG化し明細CSVを埋め込み";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1380,6 +1380,94 @@ function crc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+// ===== 証憑PNGへの明細データ埋め込み =====
+// PNGのiTXtチャンク（仕様上の公式テキスト格納領域）に、明細1行分のCSVを埋め込む。
+// 画素には手を付けないため画質への影響はゼロ。ファイル保存・ZIPエクスポート・
+// メール添付ではそのまま保持され、「画像さえあれば明細を復元できる」保険になる
+// （LINE・SNS等への投稿は再エンコードで消える点に注意）。
+// 明細を編集したときは保存時に埋め込みも更新される。CRC32はZIP自前実装のものを共用
+const PNG_META_KEYWORD = "ShidenExpense";
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function isPngBytes(bytes) {
+  return bytes.length > 8 && PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+}
+
+// チャンクデータ先頭がキーワード＋NUL終端で始まるか（ShidenExpenseチャンクの判定）
+function pngChunkKeywordMatches(bytes, dataStart, keywordBytes) {
+  for (let i = 0; i < keywordBytes.length; i++) {
+    if (bytes[dataStart + i] !== keywordBytes[i]) return false;
+  }
+  return bytes[dataStart + keywordBytes.length] === 0;
+}
+
+// PNGのIEND直前にiTXtチャンク（keyword=ShidenExpense, UTF-8本文=CSV）を挿入する。
+// 既存のShidenExpenseチャンクは取り除いて置き換える
+async function embedCsvIntoPng(blob, csvText) {
+  const src = new Uint8Array(await blob.arrayBuffer());
+  if (!isPngBytes(src)) throw new Error("PNGではないため明細データを埋め込めません");
+  const view = new DataView(src.buffer, src.byteOffset, src.byteLength);
+  const enc = new TextEncoder();
+  const keywordBytes = enc.encode(PNG_META_KEYWORD);
+  const parts = [src.subarray(0, 8)];
+  let pos = 8;
+  while (pos + 12 <= src.length) {
+    const len = view.getUint32(pos);
+    const type = String.fromCharCode(src[pos + 4], src[pos + 5], src[pos + 6], src[pos + 7]);
+    const chunk = src.subarray(pos, pos + 12 + len);
+    if (type === "IEND") {
+      // iTXtデータ: keyword NUL 圧縮フラグ(0) 圧縮方式(0) 言語タグNUL 翻訳キーワードNUL 本文(UTF-8)
+      const text = enc.encode(csvText);
+      const data = new Uint8Array(keywordBytes.length + 5 + text.length); // 中間5バイトは全て0
+      data.set(keywordBytes, 0);
+      data.set(text, keywordBytes.length + 5);
+      const typeAndData = new Uint8Array(4 + data.length);
+      typeAndData.set([0x69, 0x54, 0x58, 0x74], 0); // "iTXt"
+      typeAndData.set(data, 4);
+      const out = new Uint8Array(12 + data.length);
+      new DataView(out.buffer).setUint32(0, data.length);
+      out.set(typeAndData, 4);
+      new DataView(out.buffer).setUint32(8 + data.length, crc32(typeAndData));
+      parts.push(out, chunk);
+    } else if (type === "iTXt" && pngChunkKeywordMatches(src, pos + 8, keywordBytes)) {
+      // 旧チャンクは捨てて置き換える
+    } else {
+      parts.push(chunk);
+    }
+    pos += 12 + len;
+  }
+  return new Blob(parts, { type: "image/png" });
+}
+
+// 埋め込んだCSVを取り出す（無ければnull）。将来の「画像からの明細復元」の入口
+async function extractCsvFromPng(blob) {
+  const src = new Uint8Array(await blob.arrayBuffer());
+  if (!isPngBytes(src)) return null;
+  const view = new DataView(src.buffer, src.byteOffset, src.byteLength);
+  const keywordBytes = new TextEncoder().encode(PNG_META_KEYWORD);
+  let pos = 8;
+  while (pos + 12 <= src.length) {
+    const len = view.getUint32(pos);
+    const type = String.fromCharCode(src[pos + 4], src[pos + 5], src[pos + 6], src[pos + 7]);
+    if (type === "iTXt" && pngChunkKeywordMatches(src, pos + 8, keywordBytes)) {
+      return new TextDecoder().decode(src.subarray(pos + 8 + keywordBytes.length + 5, pos + 8 + len));
+    }
+    if (type === "IEND") break;
+    pos += 12 + len;
+  }
+  return null;
+}
+
+// 証憑ブロブがPNGなら明細CSVを埋め込んで返す（失敗時・PNG以外は元のまま返す）
+async function embedRowIntoImage(blob, row) {
+  if (!blob || blob.type !== "image/png") return blob;
+  try {
+    return await embedCsvIntoPng(blob, buildCsv([row]));
+  } catch {
+    return blob;
+  }
+}
+
 // entries: [{ name: string, data: Uint8Array }] からZIPのBlobを生成する
 function buildZip(entries) {
   const encoder = new TextEncoder();
@@ -1761,9 +1849,11 @@ function updateCropLoupe(cornerIndex) {
   loupe.classList.remove("hidden");
 }
 
-// 現在の四隅で切り抜き→まっすぐ補正→影消去→コントラスト自動補正→JPEG化。
-// 影消去とコントラスト補正はチェックボックスでON/OFFできる
-function cropAndEnhance(quality = 0.85) {
+// 現在の四隅で切り抜き→まっすぐ補正→影消去→コントラスト自動補正したキャンバスを返す。
+// 影消去とコントラスト補正はチェックボックスでON/OFFできる。
+// 証憑はPNG（明細データ埋め込みのため全証憑をPNGに統一）、OCR送信はJPEGと
+// 用途別に変換するため、ここではキャンバスのまま返す
+function cropAndEnhance() {
   const quadPx = cropQuad.map((p) => ({
     x: p.x * cropSourceCanvas.width,
     y: p.y * cropSourceCanvas.height,
@@ -1771,7 +1861,7 @@ function cropAndEnhance(quality = 0.85) {
   const out = warpQuadToRect(cropSourceCanvas, quadPx, 1800);
   if ($("opt-shadow").checked) removeShadow(out);
   if ($("opt-contrast").checked) autoEnhanceContrast(out);
-  return canvasToJpegBlob(out, quality);
+  return out;
 }
 
 // キャンバスを指定幅に等倍縮小（拡大）した複製を返す
@@ -2420,6 +2510,9 @@ function resetTransitPreview() {
 // 解析中の証憑画像と編集対象ID。フォームを閉じる時に必ずリセットする
 // （キャンセルした撮影画像が、次の編集保存時に誤って添付されるのを防ぐ）
 let currentImage = null;
+// 証憑画像の種別（"route"=経路スクショ / "receipt"=レシート・領収書）。
+// 全証憑がPNGになったため、再解析時のプロンプト選択はファイル形式でなくこの値で行う
+let currentImageKind = "";
 let editingId = null;
 let editPreviewUrl = null; // 編集画面で表示中の証憑画像のobject URL（閉じる時に必ず解放する）
 let editImageBlob = null; // startEdit時に取得済みの証憑画像（トグル表示・画像保存・申請で再取得しない）
@@ -2474,6 +2567,7 @@ function saveDraft() {
   const draft = {
     date: $("f-date").value,
     date_to: $("f-date-to").value,
+    imageKind: currentImageKind,
     vendor: $("f-vendor").value,
     amount: $("f-amount").value,
     category: $("f-category").value,
@@ -2524,6 +2618,7 @@ async function restoreDraftIfAny() {
   showPanel("capture");
   if (draft.hasImage) {
     currentImage = await getImage(DRAFT_IMAGE_ID).catch(() => null);
+    currentImageKind = draft.imageKind || "";
     if (currentImage) {
       resetImageToggle();
       editImageBlob = currentImage;
@@ -2814,7 +2909,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (labelEl) labelEl.classList.add("busy");
     try {
       const canvas = await pdfToCanvas(file);
-      const evidenceBlob = await canvasToJpegBlob(canvas, 0.9);
+      const evidenceBlob = await canvasToPngBlob(canvas);
       // 複数ページで縦長になった場合は、文字がつぶれないよう分割してOCRへ送る
       const slices = canvas.height > 2200 ? sliceCanvasVertically(canvas, 1400).slice(0, 12) : [canvas];
       const dataUrls = [];
@@ -2822,6 +2917,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await analyzeImage(dataUrls);
       if (categoryPreset) result.category = categoryPreset;
       currentImage = evidenceBlob;
+      currentImageKind = "receipt";
       if (editingId) {
         // 既存明細への後付け: 編集中のフォームへ反映（保存時に証憑として添付）
         applyAnalysisToForm(result);
@@ -2901,6 +2997,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       for (const c of slices) dataUrls.push(await canvasToJpegBlob(downscaleCanvas(c, 1800)).then(blobToDataUrl));
       const result = await analyzeTransitImage(dataUrls, { defaultDate: $("f-date").value });
       currentImage = blob; // 保存時に証憑画像として添付される
+      currentImageKind = "route";
       applyAnalysisToForm(result);
       attachEditPreview(blob);
       showMessage("ok", "写真を解析して反映しました。保存すると証憑画像として添付されます。");
@@ -3381,6 +3478,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       for (const c of transitCanvases) dataUrls.push(await canvasToJpegBlob(downscaleCanvas(c, 1800)).then(blobToDataUrl));
       const result = await analyzeTransitImage(dataUrls);
       currentImage = transitStitchedBlob;
+      currentImageKind = "route";
       editingId = null;
       resetTransitPreview();
       openForm(result);
@@ -3420,9 +3518,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const curCategory = $("f-category").value;
       let result;
-      // 交通費でも、証憑がJPEGならタクシー等のレシート写真（撮影取込はJPEG保存）なので
-      // レシートOCRで読む。経路スクショの連結証憑は常にPNG保存のためPNGで判別できる
-      if (curCategory === "交通費" && editImageBlob.type === "image/png") {
+      // 交通費の明細は「経路スクショ」と「タクシー等のレシート」の2種類があるため、
+      // 保存時に記録した種別（img_kind）でプロンプトを選ぶ。種別が無い旧データは
+      // 当時の保存形式（経路=PNG/レシート=JPEG）で判別する
+      const editRow = loadReceipts().find((x) => x.id === editingId);
+      const isRouteImage = editRow && editRow.img_kind
+        ? editRow.img_kind === "route"
+        : editImageBlob.type === "image/png";
+      if (curCategory === "交通費" && isRouteImage) {
         // 連結スクショは縦長のことがあるため、取込時と同じく分割して送る
         // （原寸で読み込む。端末内の画像は同じ端末で作られたものなのでキャンバス上限に収まる）
         const canvas = await loadCanvasFromFile(editImageBlob, 100000);
@@ -3496,8 +3599,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     btn.innerHTML = '<span class="spinner"></span>解析中...';
     $("crop-message").classList.add("hidden");
     try {
-      currentImage = await cropAndEnhance();
-      const dataUrl = await blobToDataUrl(currentImage);
+      const croppedCanvas = cropAndEnhance();
+      // 証憑はPNG（明細データ埋め込み対応）、OCRへは軽いJPEGで送る
+      currentImage = await canvasToPngBlob(croppedCanvas);
+      currentImageKind = "receipt";
+      const dataUrl = await canvasToJpegBlob(croppedCanvas, 0.85).then(blobToDataUrl);
       const result = await analyzeImage(dataUrl);
       // 宿泊費の入口から取り込んだ写真は、OCRの判定によらず勘定科目を宿泊費に固定する
       if (receiptCategoryPreset) result.category = receiptCategoryPreset;
@@ -3615,11 +3721,19 @@ document.addEventListener("DOMContentLoaded", async () => {
         Object.assign(row, { date, date_to: dateTo, vendor, amount, category, memo, note, needs_review: needsReview, split_people: splitPeople });
         if (currentImage && (!row.filename || row.filename === "(手入力)")) {
           row.filename = makeImageFilename(row, currentImage.type === "image/png" ? "png" : "jpg");
+          row.img_kind = currentImageKind || "receipt";
           try {
-            await putImage(row.id, currentImage);
+            await putImage(row.id, await embedRowIntoImage(currentImage, row));
           } catch (err) {
             row.filename = "(手入力)";
             alert("証憑画像の保存に失敗しました（明細は保存されます）: " + err.message);
+          }
+        } else if (row.filename && row.filename !== "(手入力)") {
+          // 既存の証憑PNGに埋め込んである明細CSVを、編集後の内容へ更新する
+          const stored = await getImage(row.id).catch(() => null);
+          if (stored && stored.type === "image/png") {
+            const updated = await embedRowIntoImage(stored, row);
+            if (updated !== stored) await putImage(row.id, updated).catch(() => {});
           }
         }
       }
@@ -3638,11 +3752,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       filename: "",
     };
 
-    // 証憑画像があればIndexedDBに保存し、CSVの元ファイル名列で紐づける
+    // 証憑画像があればIndexedDBに保存し、CSVの元ファイル名列で紐づける。
+    // PNGには明細CSVを埋め込んでから保存する（画像単体からの復元用）
     if (currentImage) {
       row.filename = makeImageFilename(row, currentImage.type === "image/png" ? "png" : "jpg");
+      row.img_kind = currentImageKind || "receipt";
       try {
-        await putImage(row.id, currentImage);
+        await putImage(row.id, await embedRowIntoImage(currentImage, row));
       } catch (err) {
         row.filename = "";
         alert("証憑画像の保存に失敗しました（明細は保存されます）: " + err.message);
