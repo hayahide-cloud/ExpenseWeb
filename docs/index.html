@@ -919,7 +919,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-11.98 交通費の日付は読めなければ空のまま";
+const APP_VERSION = "2026-07-11.99 一覧の勘定科目と摘要を別行に";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2767,8 +2767,9 @@ function renderList() {
     // 日付→支払先→勘定科目/摘要の3行表示。按分計算を記録している場合は4行目に追加する。
     // 宿泊費で終了日があれば「開始日 〜 終了日」の期間表示にする
     const dateText = r.date_to ? `${r.date} 〜 ${r.date_to}` : r.date || "日付なし";
-    const metaLine3 = [r.category || "科目なし", r.memo].filter(Boolean).join(" / ");
-    const metaLines = [dateText, r.vendor || "（支払先なし）", metaLine3];
+    // 勘定科目と摘要は別の行に分ける（「科目 / 摘要」の1行表示だと境目が分かりにくいため）
+    const metaLines = [dateText, r.vendor || "（支払先なし）", r.category || "科目なし"];
+    if (r.memo) metaLines.push(r.memo);
     if (r.split_people >= 2) {
       const perPerson = Math.floor(Number(r.amount) / r.split_people);
       metaLines.push(`👥 ${r.split_people}人で按分 → ¥${perPerson.toLocaleString()}/人`);
