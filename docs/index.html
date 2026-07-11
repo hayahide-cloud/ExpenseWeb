@@ -710,6 +710,14 @@
         <button type="button" id="reanalyze-btn" class="ghost hidden">🔁 画像から再解析</button>
         <img id="edit-preview" alt="証憑画像" class="hidden">
       </div>
+      <!-- 証憑画像の無い既存明細（手入力等）に、後から写真を追加して解析する入口。
+           編集中かつ画像なしの場合のみstartEditで表示する。
+           交通費はスクショを直接（複数枚は連結して）解析、それ以外はトリミングエディタを経由。
+           保存を押すと証憑画像として添付される -->
+      <label class="file-button hidden" id="edit-add-photo">
+        📷 写真を追加して解析
+        <input type="file" id="edit-photo-input" accept="image/*" multiple>
+      </label>
       <label>依頼内容・用途
         <!-- 2行・改行可。改行を含む値もCSV側でエスケープされ、一覧表示では1行に畳まれる -->
         <textarea id="f-note" rows="2"></textarea>
@@ -881,7 +889,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.89 編集画面に「画像から再解析」ボタン";
+const APP_VERSION = "2026-07-10.90 手入力明細に写真の後付け解析を追加";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -2176,12 +2184,44 @@ function canvasToJpegBlob(canvas, quality = 0.85) {
   });
 }
 
+// OCR結果を編集中フォームへ反映する（再解析・写真の後付けで共通）。
+// 依頼内容・用途と按分人数は利用者の記入のため上書きせず、
+// 読み取れなかった項目（空・0）は現在の値を据え置く。
+// 宿泊費の明細はOCRの科目判定では科目を変えない（入口で種別確定のため）
+function applyAnalysisToForm(result) {
+  const curCategory = $("f-category").value;
+  $("f-date").value = result.date || $("f-date").value;
+  $("f-vendor").value = result.vendor || $("f-vendor").value;
+  if (result.amount) $("f-amount").value = formatAmountForInput(result.amount);
+  if (result.category && curCategory !== "宿泊費") $("f-category").value = result.category;
+  $("f-memo").value = result.memo || $("f-memo").value;
+  const review = computeNeedsReview(
+    $("f-date").value,
+    $("f-vendor").value.trim(),
+    parseAmountInput($("f-amount").value),
+    $("f-category").value
+  );
+  $("review-banner").textContent = review;
+  $("review-banner").classList.toggle("hidden", review === "");
+}
+
+// 解析済みの画像を編集画面のプレビューに載せ、「写真を追加」入口を隠す
+// （保存を押すまで明細本体には添付されない）
+function attachEditPreview(blob) {
+  resetImageToggle();
+  editImageBlob = blob;
+  $("image-toggle-wrap").classList.remove("hidden");
+  $("edit-add-photo").classList.add("hidden");
+  showEditPreview();
+}
+
 function openForm(data, title) {
   $("form-title").textContent = title ?? "内容を確認・修正";
   // 削除・申請ボタンは既存明細の編集時のみ表示する（新規撮影・手入力では表示しない。
   // 画像保存はstartEdit()側で画像の有無を確認した後に表示切り替えする）
   $("delete-btn").classList.toggle("hidden", editingId === null);
   $("share-btn").classList.toggle("hidden", editingId === null);
+  $("edit-add-photo").classList.add("hidden"); // 画像なしの既存明細のみstartEditで表示する
   $("f-date").value = data.date;
   $("f-vendor").value = data.vendor;
   $("f-amount").value = formatAmountForInput(data.amount);
@@ -2418,6 +2458,8 @@ async function startEdit(r) {
       $("reanalyze-btn").classList.remove("hidden");
     }
   }
+  // 証憑画像が無い明細には「写真を追加して解析」の入口を出す
+  $("edit-add-photo").classList.toggle("hidden", editImageBlob !== null);
 }
 
 // 編集フォームの現在の入力値から明細オブジェクトを組み立てる（申請に使う）
@@ -2627,6 +2669,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     setReceiptCategoryPreset(categoryPreset);
+    await openCropForFile(file);
+  }
+  // 選択した写真をトリミングエディタで開く（新規取込・編集中の写真後付けで共通）
+  async function openCropForFile(file) {
     try {
       cropSourceCanvas = await loadCanvasFromFile(file, 3600);
       // 選択直後の写真を下書き保存する（誤操作で画面がリロードされても撮り直しにならないように）
@@ -2642,6 +2688,43 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   $("image-input").addEventListener("change", () => onReceiptFileChosen($("image-input"), ""));
   $("hotel-input").addEventListener("change", () => onReceiptFileChosen($("hotel-input"), "宿泊費"));
+
+  // 手入力などで証憑画像の無い既存明細に、後から写真を追加して解析する。
+  // 交通費: スクショを直接解析（複数枚選択時は重なり連結して1枚に）。トリミング不要のため
+  // 宿泊費・購入費等: トリミングエディタを経由（レシート写真は傾き補正が要るため）。
+  //   エディタの「解析する」時点でeditingIdが入ったままなので、結果は編集中のフォームへ反映される
+  $("edit-photo-input").addEventListener("change", async () => {
+    const files = Array.from($("edit-photo-input").files).filter((f) => f.type.startsWith("image/"));
+    $("edit-photo-input").value = "";
+    if (files.length === 0) {
+      showMessage("error", "写真を選択してください（動画は取り込めません）。");
+      return;
+    }
+    if ($("f-category").value !== "交通費") {
+      await openCropForFile(files[0]);
+      return;
+    }
+    const label = $("edit-add-photo");
+    label.classList.add("busy");
+    try {
+      const canvases = [];
+      for (const f of files) canvases.push(await loadCanvasFromFile(f, 3600));
+      const stitched = stitchCanvasesVertically(canvases);
+      const blob = await canvasToPngBlob(stitched.canvas);
+      const slices = sliceCanvasVertically(stitched.canvas, 1400).slice(0, 12);
+      const dataUrls = [];
+      for (const c of slices) dataUrls.push(await canvasToJpegBlob(downscaleCanvas(c, 1800)).then(blobToDataUrl));
+      const result = await analyzeTransitImage(dataUrls, { defaultDate: $("f-date").value });
+      currentImage = blob; // 保存時に証憑画像として添付される
+      applyAnalysisToForm(result);
+      attachEditPreview(blob);
+      showMessage("ok", "写真を解析して反映しました。保存すると証憑画像として添付されます。");
+    } catch (err) {
+      showMessage("error", err.message);
+    } finally {
+      label.classList.remove("busy");
+    }
+  });
 
   // 交通費: 経路検索スクショの取込（2段階）。
   // 1段階目: 画像を縦に連結し、結果を画面で確認してもらう。
@@ -3163,20 +3246,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else {
         result = await analyzeImage(await blobToDataUrl(editImageBlob));
       }
-      $("f-date").value = result.date || $("f-date").value;
-      $("f-vendor").value = result.vendor || $("f-vendor").value;
-      if (result.amount) $("f-amount").value = formatAmountForInput(result.amount);
-      // 宿泊費の明細は入口で種別が確定しているため、OCRの科目判定では変えない
-      if (result.category && curCategory !== "宿泊費") $("f-category").value = result.category;
-      $("f-memo").value = result.memo || $("f-memo").value;
-      const review = computeNeedsReview(
-        $("f-date").value,
-        $("f-vendor").value.trim(),
-        parseAmountInput($("f-amount").value),
-        $("f-category").value
-      );
-      $("review-banner").textContent = review;
-      $("review-banner").classList.toggle("hidden", review === "");
+      applyAnalysisToForm(result);
       showMessage("ok", "画像から再解析しました。内容を確認して保存してください。");
     } catch (err) {
       showMessage("error", err.message);
@@ -3243,6 +3313,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await analyzeImage(dataUrl);
       // 宿泊費の入口から取り込んだ写真は、OCRの判定によらず勘定科目を宿泊費に固定する
       if (receiptCategoryPreset) result.category = receiptCategoryPreset;
+      if (editingId) {
+        // 既存明細への写真の後付け（編集中に「写真を追加して解析」から来た場合）:
+        // 新規フォームを開き直さず、編集中のフォームへ結果を反映する。
+        // currentImage（切り抜き済み画像）は保存時に証憑画像として添付される
+        resetCropEditor();
+        deleteImage(CROP_DRAFT_IMAGE_ID).catch(() => {});
+        applyAnalysisToForm(result);
+        attachEditPreview(currentImage);
+        showMessage("ok", "写真を解析して反映しました。保存すると証憑画像として添付されます。");
+        return;
+      }
       editingId = null;
       resetCropEditor();
       $("image-input").value = "";
@@ -3329,10 +3410,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     const rows = loadReceipts();
 
     if (editingId) {
-      // 既存明細の更新。証憑画像・取込日時・元ファイル名は変更しない
+      // 既存明細の更新。取込日時は変更しない。証憑画像は「画像が無かった明細に
+      // 後から写真を追加した場合」のみ添付する（既存画像の差し替えはしない）
       const row = rows.find((x) => x.id === editingId);
       if (row) {
         Object.assign(row, { date, vendor, amount, category, memo, note, needs_review: needsReview, split_people: splitPeople });
+        if (currentImage && (!row.filename || row.filename === "(手入力)")) {
+          row.filename = makeImageFilename(row, currentImage.type === "image/png" ? "png" : "jpg");
+          try {
+            await putImage(row.id, currentImage);
+          } catch (err) {
+            row.filename = "(手入力)";
+            alert("証憑画像の保存に失敗しました（明細は保存されます）: " + err.message);
+          }
+        }
       }
       saveReceipts(rows);
       closeForm();
