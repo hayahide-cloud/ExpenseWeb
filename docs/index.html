@@ -653,7 +653,7 @@
       <!-- タクシー・飛行機等の紙のレシート/領収書用: 撮影フローは購入費と同じ
            （トリミング→レシートOCR）で、勘定科目だけ交通費に固定される -->
       <label class="file-button transit-photo">
-        🚕✈️ タップして撮影 / 画像を選択
+        🎫 タップして撮影 / 画像を選択
         <input type="file" id="transit-photo-input" accept="image/*,video/*">
       </label>
       <!-- 交通費の手入力: 勘定科目を交通費・日付を今日で開く -->
@@ -903,7 +903,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-10.93 交通費レシート撮影の表記を🚕✈️に";
+const APP_VERSION = "2026-07-10.94 交通費レシート撮影の絵文字を🎫に";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
