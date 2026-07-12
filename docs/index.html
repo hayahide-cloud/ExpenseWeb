@@ -747,6 +747,15 @@
       <label id="date-to-wrap" class="hidden">宿泊終了日（任意・チェックアウト日）
         <input type="date" id="f-date-to">
       </label>
+      <!-- 交通費のみ: 往復区分（任意）。一覧・CSV・申請文に反映される -->
+      <label id="trip-type-wrap" class="hidden">往復区分（任意）
+        <select id="f-trip-type">
+          <option value="">（指定なし）</option>
+          <option value="往路">往路</option>
+          <option value="復路">復路</option>
+          <option value="往復">往復</option>
+        </select>
+      </label>
       <label>支払先
         <input type="text" id="f-vendor" placeholder="店舗名・会社名">
       </label>
@@ -898,7 +907,7 @@ const SOURCE_MARKER = "(Shiden取込)";
 // 1〜8列目はExpenseVBAの明細シートと同一。9列目の備考は整理用メモ、10〜11列目は按分計算の
 // 記録（いずれも末尾追加なので取込互換を壊さない）
 // 宿泊終了日: 宿泊費で宿泊が複数日にわたる場合のみ値が入る（それ以外は空欄）
-const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "勘定科目", "摘要", "元ファイル名", "要確認", "備考", "按分人数", "1人あたり請求額", "宿泊終了日"];
+const CSV_HEADERS = ["取込日時", "領収書日付", "支払先", "金額", "勘定科目", "摘要", "元ファイル名", "要確認", "備考", "按分人数", "1人あたり請求額", "宿泊終了日", "往復区分"];
 const STORAGE_KEY = "shiden_expense_receipts";
 const SETTINGS_KEY = "shiden_expense_settings";
 const ACTIVE_PANEL_KEY = "shiden_expense_active_panel";
@@ -919,7 +928,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-11.100 交通費の支払先に全路線を列挙";
+const APP_VERSION = "2026-07-11.101 交通費に往復区分（往路/復路/往復）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -987,6 +996,7 @@ function buildCsv(rows) {
       r.filename || SOURCE_MARKER, r.needs_review, r.note ?? "",
       r.split_people >= 2 ? r.split_people : "", perPerson,
       r.date_to ?? "",
+      r.trip_type ?? "",
     ].map(escape).join(","));
   }
   return "\ufeff" + lines.join("\r\n") + "\r\n";
@@ -1013,6 +1023,7 @@ function buildShareText(r) {
     `支払先: ${r.vendor || "（未入力）"}`,
     `金額: ¥${Number(r.amount).toLocaleString()}`,
     `勘定科目: ${r.category || "（未入力）"}`,
+    r.trip_type ? `往復区分: ${r.trip_type}` : null,
     `摘要: ${r.memo || "（未入力）"}`,
     r.note ? `備考: ${r.note}` : null,
     r.split_people >= 2 ? `按分: ${r.split_people}人で ¥${Math.floor(Number(r.amount) / r.split_people).toLocaleString()}/人` : null,
@@ -2391,7 +2402,7 @@ function applyAnalysisToForm(result) {
   if (result.category && curCategory !== "宿泊費" && curCategory !== "交通費") {
     $("f-category").value = result.category;
   }
-  updateDateToVisibility();
+  updateCategoryFields();
   // 宿泊終了日は宿泊費の明細でOCRが期間を読み取れた場合のみ反映
   if (result.date_to && $("f-category").value === "宿泊費") $("f-date-to").value = result.date_to;
   $("f-memo").value = result.memo || $("f-memo").value;
@@ -2415,9 +2426,10 @@ function attachEditPreview(blob) {
   showEditPreview();
 }
 
-// 宿泊終了日の欄は勘定科目が宿泊費のときだけ表示する
-function updateDateToVisibility() {
+// 勘定科目に連動する欄の表示切り替え（宿泊終了日=宿泊費のみ、往復区分=交通費のみ）
+function updateCategoryFields() {
   $("date-to-wrap").classList.toggle("hidden", $("f-category").value !== "宿泊費");
+  $("trip-type-wrap").classList.toggle("hidden", $("f-category").value !== "交通費");
 }
 
 function openForm(data, title) {
@@ -2429,10 +2441,11 @@ function openForm(data, title) {
   $("edit-add-photo").classList.add("hidden"); // 画像なしの既存明細のみstartEditで表示する
   $("f-date").value = data.date;
   $("f-date-to").value = data.date_to ?? "";
+  $("f-trip-type").value = data.trip_type ?? "";
   $("f-vendor").value = data.vendor;
   $("f-amount").value = formatAmountForInput(data.amount);
   $("f-category").value = data.category;
-  updateDateToVisibility();
+  updateCategoryFields();
   $("f-memo").value = data.memo;
   $("f-note").value = data.note ?? "";
   const review = computeNeedsReview(data.date, data.vendor, data.amount, data.category);
@@ -2571,6 +2584,7 @@ function saveDraft() {
   const draft = {
     date: $("f-date").value,
     date_to: $("f-date-to").value,
+    trip_type: $("f-trip-type").value,
     imageKind: currentImageKind,
     vendor: $("f-vendor").value,
     amount: $("f-amount").value,
@@ -2616,7 +2630,7 @@ async function restoreDraftIfAny() {
   }
   editingId = null;
   openForm({
-    date: draft.date, date_to: draft.date_to, vendor: draft.vendor, amount: parseAmountInput(draft.amount),
+    date: draft.date, date_to: draft.date_to, trip_type: draft.trip_type, vendor: draft.vendor, amount: parseAmountInput(draft.amount),
     category: draft.category, memo: draft.memo, note: draft.note,
   });
   showPanel("capture");
@@ -2682,6 +2696,7 @@ function getFormReceipt() {
     id: editingId,
     date: $("f-date").value,
     date_to: $("f-category").value === "宿泊費" ? $("f-date-to").value : "",
+    trip_type: $("f-category").value === "交通費" ? $("f-trip-type").value : "",
     vendor: $("f-vendor").value.trim(),
     amount: parseAmountInput($("f-amount").value),
     category: $("f-category").value,
@@ -2769,7 +2784,8 @@ function renderList() {
     // 宿泊費で終了日があれば「開始日 〜 終了日」の期間表示にする
     const dateText = r.date_to ? `${r.date} 〜 ${r.date_to}` : r.date || "日付なし";
     // 勘定科目と摘要は別の行に分ける（「科目 / 摘要」の1行表示だと境目が分かりにくいため）
-    const metaLines = [dateText, r.vendor || "（支払先なし）", r.category || "科目なし"];
+    const categoryText = (r.category || "科目なし") + (r.trip_type ? `（${r.trip_type}）` : "");
+    const metaLines = [dateText, r.vendor || "（支払先なし）", categoryText];
     if (r.memo) metaLines.push(r.memo);
     if (r.split_people >= 2) {
       const perPerson = Math.floor(Number(r.amount) / r.split_people);
@@ -3680,7 +3696,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("form-step").addEventListener("change", () => saveDraft());
 
   // 勘定科目を切り替えたら宿泊終了日欄の表示を追従させる
-  $("f-category").addEventListener("change", updateDateToVisibility);
+  $("f-category").addEventListener("change", updateCategoryFields);
 
   // 金額入力: 入力のたびにカンマ区切りへ整形する（数字以外は破棄）
   $("f-amount").addEventListener("input", (e) => {
@@ -3705,8 +3721,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const category = $("f-category").value;
     const memo = $("f-memo").value.trim();
     const note = $("f-note").value.trim();
-    // 宿泊終了日は宿泊費のときだけ保存する（科目を変えた場合の残骸を持ち越さない）
+    // 宿泊終了日・往復区分は該当科目のときだけ保存する（科目を変えた場合の残骸を持ち越さない）
     const dateTo = category === "宿泊費" ? $("f-date-to").value : "";
+    const tripType = category === "交通費" ? $("f-trip-type").value : "";
     if (dateTo && date && dateTo < date) {
       showMessage("error", "宿泊終了日は日付（宿泊開始日）以降にしてください。");
       return;
@@ -3723,7 +3740,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // 後から写真を追加した場合」のみ添付する（既存画像の差し替えはしない）
       const row = rows.find((x) => x.id === editingId);
       if (row) {
-        Object.assign(row, { date, date_to: dateTo, vendor, amount, category, memo, note, needs_review: needsReview, split_people: splitPeople });
+        Object.assign(row, { date, date_to: dateTo, trip_type: tripType, vendor, amount, category, memo, note, needs_review: needsReview, split_people: splitPeople });
         if (currentImage && (!row.filename || row.filename === "(手入力)")) {
           row.filename = makeImageFilename(row, currentImage.type === "image/png" ? "png" : "jpg");
           row.img_kind = currentImageKind || "receipt";
@@ -3750,7 +3767,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const row = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      date, date_to: dateTo, vendor, amount, category, memo, note,
+      date, date_to: dateTo, trip_type: tripType, vendor, amount, category, memo, note,
       needs_review: needsReview,
       split_people: splitPeople,
       created_at: new Date().toISOString(),
