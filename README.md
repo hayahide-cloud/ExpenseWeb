@@ -241,6 +241,13 @@ ExpenseVBAを置き換えるものではなく**併用**する。月次集計・
   数値を表示する実装はせず、公式の利用状況ページを別タブで開く方式にとどめている
 - iOS Safariの「ホーム画面に追加」でアプリのように起動（PWA manifest対応）
 
+### アイコン
+
+- ホーム画面アイコンのマスターSVGは `docs/icon.svg`（領収書×紫電ボルト）。
+  `docs/icon-192.png` / `docs/icon-512.png` はこのSVGを各サイズでラスタライズしたもの。
+  デザイン変更時はSVGを編集してからPNGを再生成する（レンダリング結果はPNGと画素一致することを確認済み）
+- ヘッダーのロゴバッジは別デザインで、`docs/index.html` 内のインラインSVG（紫グラデ角丸＋金の稲妻）
+
 ### 公開手順（GitHub Pages）
 
 1. リポジトリをPublicに変更（Settings → General → Danger Zone → Change visibility）
