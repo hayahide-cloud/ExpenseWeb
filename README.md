@@ -65,10 +65,10 @@ ExpenseVBAを置き換えるものではなく**併用**する。月次集計・
 - **データの永続化とストレージ表示**: 起動時に`navigator.storage.persist()`で
   データの永続化を要求（許可されるとiOS等のストレージ逼迫時の自動削除対象から
   外れやすくなる）。設定タブに保存領域の使用量・上限・永続化状態を表示
-- **GitHub同期（Hayahide_Logリポジトリ）**: 明細を端末内だけでなくGitHubの
+- **GitHub同期（Hayahide-Logリポジトリ）**: 明細を端末内だけでなくGitHubの
   プライベートリポジトリでも管理する。設定タブでFine-grained PAT
   （対象リポジトリのみ・Contents Read and write権限）とリポジトリ名
-  （既定 `hayahide-cloud/Hayahide_Log`）を設定すると、保存・編集・削除のたびに
+  （既定 `hayahide-cloud/Hayahide-Log`）を設定すると、保存・編集・削除のたびに
   **明細1件 = 証憑PNG1枚**（明細CSV埋め込み済み）を `shiden-expense/年-月/` へ
   Contents APIで自動同期する。手入力（証憑なし）の明細は要点を描画した
   プレースホルダPNGを入れ物にして同期する

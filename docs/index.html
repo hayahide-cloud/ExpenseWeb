@@ -842,7 +842,7 @@
       <a id="openai-usage-link" class="ghost link-btn" href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener">📊 OpenAIの利用状況を見る</a>
     </div>
     <div class="card">
-      <h2>GitHub同期（Hayahide_Log）</h2>
+      <h2>GitHub同期（Hayahide-Log）</h2>
       <!-- 明細を端末内だけでなくGitHubのプライベートリポジトリにも保存する。
            1明細=1PNG（明細CSV埋め込み済み証憑）として保存するので、リポジトリ上でも
            画像として中身を確認でき、端末が変わっても全件復元できる -->
@@ -850,7 +850,7 @@
         <input type="password" id="s-ghtoken" placeholder="github_pat_...">
       </label>
       <label>リポジトリ（owner/名前）
-        <input type="text" id="s-ghrepo" placeholder="hayahide-cloud/Hayahide_Log">
+        <input type="text" id="s-ghrepo" placeholder="hayahide-cloud/Hayahide-Log">
       </label>
       <p class="note">
         保存・編集・削除のたびに、明細CSVを埋め込んだ証憑PNGを上記リポジトリの
@@ -957,11 +957,11 @@ const DRAFT_KEY = "shiden_expense_draft";
 const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 
-// GitHub同期（明細をHayahide_Logリポジトリへ保存する機能）
+// GitHub同期（明細をHayahide-Logリポジトリへ保存する機能）
 const GH_SHA_KEY = "shiden_expense_gh_sha";        // リポジトリ上のパス→ファイルsha（更新時に必要）
 const GH_DELETE_KEY = "shiden_expense_gh_deletes"; // 行削除時にリポジトリ側の削除を待つパスの列
 const GH_FOLDER = "shiden-expense";                // リポジトリ内の保存先フォルダ（他アプリのデータと分ける）
-const GH_DEFAULT_REPO = "hayahide-cloud/Hayahide_Log";
+const GH_DEFAULT_REPO = "hayahide-cloud/Hayahide-Log";
 
 // 撮影の入口による勘定科目の固定（宿泊費の入口なら"宿泊費"、通常は""）。
 // トリミング中にリロードされても入口の種別を忘れないようlocalStorageにも持つ
@@ -974,7 +974,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-13.107 GitHub同期（Hayahide_Log）を追加";
+const APP_VERSION = "2026-07-15.108 同期先の既定リポジトリ名を修正（Hayahide-Log）";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1644,7 +1644,7 @@ async function embedRowIntoImage(blob, row) {
   }
 }
 
-// ===== GitHub同期（Hayahide_Logリポジトリ） =====
+// ===== GitHub同期（Hayahide-Logリポジトリ） =====
 // 明細1件 = 証憑PNG1枚（明細CSV埋め込み済み）としてリポジトリに保存する。
 // 端末内(localStorage/IndexedDB)はオフラインでも使えるワーキング領域のままとし、
 // リポジトリを「端末が消えても残る正本アーカイブ」として使う設計。

@@ -1,4 +1,4 @@
-// GitHub同期（Hayahide_Logリポジトリへの保存・更新・削除・復元）の検証。
+// GitHub同期（Hayahide-Logリポジトリへの保存・更新・削除・復元）の検証。
 // api.github.comをインメモリの疑似リポジトリでモックし、実際のネットワークは使わない
 import { chromium } from "playwright";
 
@@ -25,7 +25,7 @@ function handleGh(route) {
   if (apiDown) return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
   const u = new URL(req.url());
   const pathname = decodeURIComponent(u.pathname);
-  const repoRoot = "/repos/hayahide-cloud/Hayahide_Log";
+  const repoRoot = "/repos/hayahide-cloud/Hayahide-Log";
   const json = (status, body) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
   if (pathname === repoRoot && req.method() === "GET") {
@@ -102,7 +102,7 @@ await page.waitForLoadState("domcontentloaded");
 await page.evaluate(() => {
   localStorage.setItem("shiden_expense_settings", JSON.stringify({
     apiKey: "sk-test", model: "gpt-5.4",
-    ghToken: "github_pat_test", ghRepo: "hayahide-cloud/Hayahide_Log",
+    ghToken: "github_pat_test", ghRepo: "hayahide-cloud/Hayahide-Log",
   }));
 });
 
