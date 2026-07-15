@@ -835,11 +835,35 @@
       <button id="settings-save-btn">設定を保存</button>
       <p class="note">
         APIキーはこの端末のブラウザ内(localStorage)にのみ保存され、OpenAI以外には送信されません。<br>
-        明細データもこの端末内にのみ保存されます。月次でCSVエクスポートしてください。
+        明細データは端末内に保存されます（下のGitHub同期を設定すると、リポジトリにも自動保存されます）。
       </p>
       <!-- OpenAIはAPIキー経由でクレジット残高を取得する公式APIを提供していないため、
            アプリ内表示ではなく公式の利用状況ページへのリンクにとどめている -->
       <a id="openai-usage-link" class="ghost link-btn" href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener">📊 OpenAIの利用状況を見る</a>
+    </div>
+    <div class="card">
+      <h2>GitHub同期（Hayahide_Log）</h2>
+      <!-- 明細を端末内だけでなくGitHubのプライベートリポジトリにも保存する。
+           1明細=1PNG（明細CSV埋め込み済み証憑）として保存するので、リポジトリ上でも
+           画像として中身を確認でき、端末が変わっても全件復元できる -->
+      <label>アクセストークン
+        <input type="password" id="s-ghtoken" placeholder="github_pat_...">
+      </label>
+      <label>リポジトリ（owner/名前）
+        <input type="text" id="s-ghrepo" placeholder="hayahide-cloud/Hayahide_Log">
+      </label>
+      <p class="note">
+        保存・編集・削除のたびに、明細CSVを埋め込んだ証憑PNGを上記リポジトリの
+        <b>shiden-expense/年-月/</b> フォルダへ自動同期します。オフライン時は端末内に保存され、
+        次の同期で追いつきます。<br>
+        トークンは <b>Fine-grained personal access token</b> で、対象リポジトリのみ・
+        Contents（Read and write）権限だけを付与したものを使ってください。
+        トークンはこの端末のブラウザ内(localStorage)にのみ保存され、GitHub以外には送信されません。
+      </p>
+      <p class="note" id="gh-sync-status" style="text-align: center;"></p>
+      <button id="gh-sync-btn" class="ghost">🔄 未同期分を今すぐ同期</button>
+      <button id="gh-restore-btn" class="ghost">🛟 リポジトリから全明細を復元</button>
+      <p class="note" id="gh-restore-result" style="text-align: center;"></p>
     </div>
     <div class="card">
       <h2>データの復元</h2>
@@ -933,6 +957,12 @@ const DRAFT_KEY = "shiden_expense_draft";
 const DRAFT_IMAGE_ID = "__draft__";
 const CROP_DRAFT_IMAGE_ID = "__crop_draft__"; // トリミング前の選択写真（リロード復元用）
 
+// GitHub同期（明細をHayahide_Logリポジトリへ保存する機能）
+const GH_SHA_KEY = "shiden_expense_gh_sha";        // リポジトリ上のパス→ファイルsha（更新時に必要）
+const GH_DELETE_KEY = "shiden_expense_gh_deletes"; // 行削除時にリポジトリ側の削除を待つパスの列
+const GH_FOLDER = "shiden-expense";                // リポジトリ内の保存先フォルダ（他アプリのデータと分ける）
+const GH_DEFAULT_REPO = "hayahide-cloud/Hayahide_Log";
+
 // 撮影の入口による勘定科目の固定（宿泊費の入口なら"宿泊費"、通常は""）。
 // トリミング中にリロードされても入口の種別を忘れないようlocalStorageにも持つ
 const CAPTURE_CATEGORY_KEY = "shiden_expense_capture_category";
@@ -944,7 +974,7 @@ function setReceiptCategoryPreset(v) {
 }
 const DEFAULT_MODEL = "gpt-5.4";
 // UIに関わる変更をpushするたびに更新する（設定タブに表示。キャッシュで旧版が出ていないかの確認用）
-const APP_VERSION = "2026-07-13.106 ブラウザタブに紫電ファビコンを追加";
+const APP_VERSION = "2026-07-13.107 GitHub同期（Hayahide_Log）を追加";
 
 // OCRプロンプト: ExpenseVBA(modReceiptOCR.bas)と同一文言。抽出品質を揃えるため変更時は両方を同期すること
 const PROMPT = [
@@ -1517,8 +1547,9 @@ function parseCsv(text) {
 
 // 証憑PNGに埋め込んだ明細CSVから明細を復元する。列は名前で対応付けるため、
 // 列構成が古い時期のPNG（宿泊終了日の旧列名等）でも復元できる。
-// 重複判定は「取込日時・金額・支払先が一致」。画像は埋め込み入りの原本をそのまま保存する
-async function restoreFromPngFiles(files) {
+// 重複判定は「取込日時・金額・支払先が一致」。画像は埋め込み入りの原本をそのまま保存する。
+// opts.ghPathFor: GitHubリポジトリからの復元時に、行へ元のリポジトリパスを引き継ぐための関数
+async function restoreFromPngFiles(files, opts = {}) {
   const rows = loadReceipts();
   let restored = 0, dup = 0, noData = 0, failed = 0;
   for (const file of files) {
@@ -1559,6 +1590,15 @@ async function restoreFromPngFiles(files) {
       row.needs_review = computeNeedsReview(row.date, row.vendor, row.amount, row.category);
       if (!row.filename || row.filename === SOURCE_MARKER || row.filename === "(手入力)") {
         row.filename = makeImageFilename(row, "png");
+      }
+      // リポジトリからの復元: 元のパスを引き継ぎ、同期済みとして扱う
+      // （新しいパスへ同じ明細が二重アップロードされるのを防ぐ）
+      if (opts.ghPathFor) {
+        const ghPath = opts.ghPathFor(file);
+        if (ghPath) {
+          row.gh_path = ghPath;
+          row.gh_synced = true;
+        }
       }
       await putImage(row.id, file);
       rows.push(row);
@@ -1602,6 +1642,230 @@ async function embedRowIntoImage(blob, row) {
   } catch {
     return blob;
   }
+}
+
+// ===== GitHub同期（Hayahide_Logリポジトリ） =====
+// 明細1件 = 証憑PNG1枚（明細CSV埋め込み済み）としてリポジトリに保存する。
+// 端末内(localStorage/IndexedDB)はオフラインでも使えるワーキング領域のままとし、
+// リポジトリを「端末が消えても残る正本アーカイブ」として使う設計。
+// - 保存・編集のたびに該当行のPNGを自動アップロード（失敗しても未同期として残り、後で再同期できる）
+// - 明細の個別削除は誤登録の訂正なのでリポジトリ側も削除する
+// - 「全明細を削除」は端末整理のための操作なのでリポジトリには触れない（アーカイブが残る）
+
+function ghSettings() {
+  const s = loadSettings();
+  return { token: s.ghToken || "", repo: (s.ghRepo || GH_DEFAULT_REPO).trim() };
+}
+const ghConfigured = () => !!ghSettings().token;
+
+function ghApi(path, options = {}) {
+  const { token, repo } = ghSettings();
+  return fetch(`https://api.github.com/repos/${repo}${path}`, {
+    method: options.method || "GET",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": options.accept || "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: options.body,
+  });
+}
+
+// パスの各セグメントだけをエンコードする（/はそのまま残す）
+const encodeGhPath = (path) => path.split("/").map(encodeURIComponent).join("/");
+
+function loadGhShaMap() {
+  try { return JSON.parse(localStorage.getItem(GH_SHA_KEY)) ?? {}; }
+  catch { return {}; }
+}
+const saveGhShaMap = (m) => localStorage.setItem(GH_SHA_KEY, JSON.stringify(m));
+
+function loadGhDeletes() {
+  try { return JSON.parse(localStorage.getItem(GH_DELETE_KEY)) ?? []; }
+  catch { return []; }
+}
+const saveGhDeletes = (a) => localStorage.setItem(GH_DELETE_KEY, JSON.stringify(a));
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// 明細行のリポジトリ上の保存先。取込日時とidから決まり、編集しても変わらない。
+// 一度アップロードした行はgh_pathに記録したパスを使い続ける（復元後も同じファイルを更新できる）
+function rowRepoPath(row) {
+  if (row.gh_path) return row.gh_path;
+  const d = new Date(row.created_at);
+  const pad = (n) => String(n).padStart(2, "0");
+  const month = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${GH_FOLDER}/${month}/${stamp}_${row.id.slice(-6)}.png`;
+}
+
+// ファイルを作成または更新する。更新には現在のshaが必要なため手元のsha表を使い、
+// ずれていた場合（別端末からの更新等）は最新shaを取り直して1回だけ再試行する
+async function ghPutFile(path, blob, message) {
+  const shaMap = loadGhShaMap();
+  const body = { message, content: await blobToBase64(blob) };
+  if (shaMap[path]) body.sha = shaMap[path];
+  let res = await ghApi(`/contents/${encodeGhPath(path)}`, { method: "PUT", body: JSON.stringify(body) });
+  if (res.status === 409 || res.status === 422) {
+    const cur = await ghApi(`/contents/${encodeGhPath(path)}`);
+    if (cur.ok) body.sha = (await cur.json()).sha;
+    else delete body.sha;
+    res = await ghApi(`/contents/${encodeGhPath(path)}`, { method: "PUT", body: JSON.stringify(body) });
+  }
+  if (!res.ok) throw new Error(`GitHubへのアップロードに失敗しました (HTTP ${res.status})`);
+  const data = await res.json();
+  shaMap[path] = data.content.sha;
+  saveGhShaMap(shaMap);
+}
+
+async function ghDeleteFile(path, message) {
+  const shaMap = loadGhShaMap();
+  let sha = shaMap[path];
+  if (!sha) {
+    const cur = await ghApi(`/contents/${encodeGhPath(path)}`);
+    if (cur.status === 404) return; // 既に無い＝削除済みとして扱う
+    if (!cur.ok) throw new Error(`GitHubの参照に失敗しました (HTTP ${cur.status})`);
+    sha = (await cur.json()).sha;
+  }
+  let res = await ghApi(`/contents/${encodeGhPath(path)}`, { method: "DELETE", body: JSON.stringify({ message, sha }) });
+  if (res.status === 409 || res.status === 422) {
+    const cur = await ghApi(`/contents/${encodeGhPath(path)}`);
+    if (cur.status === 404) res = { ok: true, status: 404 };
+    else if (cur.ok) {
+      sha = (await cur.json()).sha;
+      res = await ghApi(`/contents/${encodeGhPath(path)}`, { method: "DELETE", body: JSON.stringify({ message, sha }) });
+    }
+  }
+  if (!res.ok && res.status !== 404) throw new Error(`GitHubでの削除に失敗しました (HTTP ${res.status})`);
+  delete shaMap[path];
+  saveGhShaMap(shaMap);
+}
+
+// 手入力（証憑なし）の明細も1行=1PNGの形でリポジトリに置くための代替画像。
+// 明細CSVを埋め込む「入れ物」として、内容の要点だけを描画する
+function placeholderPngForRow(row) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = 360;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#14101d";
+  ctx.fillRect(0, 0, 640, 360);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#b9aee0";
+  ctx.font = "bold 30px sans-serif";
+  ctx.fillText("手入力（証憑画像なし）", 320, 80);
+  ctx.fillStyle = "#ece5fa";
+  ctx.font = "24px sans-serif";
+  ctx.fillText(`${row.date || "日付なし"} ／ ${row.vendor || "支払先なし"}`, 320, 170);
+  ctx.fillText(`¥${Number(row.amount).toLocaleString()} ／ ${row.category || "科目なし"}`, 320, 220);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+// 明細1件をリポジトリへアップロードする。証憑がJPEG（全PNG化以前の旧データ）の場合は
+// CSVを埋め込めないため、PNGへ変換してから同期する（端末内の保存はそのまま）
+async function syncRowToGitHub(row) {
+  let blob = await getImage(row.id).catch(() => null);
+  if (blob && blob.type !== "image/png") {
+    const canvas = await loadCanvasFromFile(blob, 999999);
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  }
+  if (!blob) blob = await placeholderPngForRow(row);
+  blob = await embedRowIntoImage(blob, row);
+  const label = `${row.date || "日付なし"} ${row.vendor || "支払先なし"} ¥${Number(row.amount).toLocaleString()}`;
+  const path = rowRepoPath(row);
+  await ghPutFile(path, blob, `明細を同期: ${label}`);
+  return path;
+}
+
+// 同期の実行。削除待ち→未同期の行の順に処理する。1件ごとに結果を確定するので、
+// 途中でアプリを閉じても次回起動時に残りから再開できる
+let ghSyncRunning = false;
+async function processGhSync(showErrors = false) {
+  if (!ghConfigured() || ghSyncRunning) return;
+  ghSyncRunning = true;
+  updateGhSyncStatus("同期中…");
+  try {
+    const deletes = loadGhDeletes();
+    while (deletes.length) {
+      await ghDeleteFile(deletes[0], "明細の削除を同期");
+      deletes.shift();
+      saveGhDeletes(deletes);
+    }
+    // 同期中の保存・削除と競合しないよう、対象idだけ控えて1件ずつ最新の行を読み直す
+    const pendingIds = loadReceipts().filter((r) => !r.gh_synced).map((r) => r.id);
+    for (const id of pendingIds) {
+      const rows = loadReceipts();
+      const row = rows.find((r) => r.id === id);
+      if (!row || row.gh_synced) continue;
+      const path = await syncRowToGitHub(row);
+      // アップロード中にユーザーが同じ行を編集した可能性があるため、書き込み直前に読み直す
+      const fresh = loadReceipts();
+      const freshRow = fresh.find((r) => r.id === id);
+      if (freshRow && JSON.stringify(freshRow) === JSON.stringify(row)) {
+        freshRow.gh_synced = true;
+        freshRow.gh_path = path;
+        saveReceipts(fresh);
+      }
+    }
+  } catch (err) {
+    if (showErrors) alert("GitHub同期に失敗しました: " + err.message);
+  } finally {
+    ghSyncRunning = false;
+    updateGhSyncStatus();
+  }
+}
+
+// 保存・削除の直後に呼ぶ。UI操作を待たせないよう投げっぱなしにする
+// （失敗しても未同期件数に残るので、後から「今すぐ同期」やオンライン復帰時に追いつける）
+function requestGhSync() {
+  processGhSync().catch(() => {});
+}
+
+function updateGhSyncStatus(tempText) {
+  const el = $("gh-sync-status");
+  if (!el) return;
+  if (!ghConfigured()) {
+    el.textContent = "未設定（トークンを保存すると同期が始まります）";
+    return;
+  }
+  if (tempText) {
+    el.textContent = tempText;
+    return;
+  }
+  const pending = loadReceipts().filter((r) => !r.gh_synced).length + loadGhDeletes().length;
+  el.textContent = pending ? `未同期: ${pending}件` : "同期済み ✓";
+}
+
+// リポジトリ内のshiden-expense/配下の全PNGを取得して明細を復元する。
+// 復元した行はリポジトリ由来なので同期済みとして扱い、元のパスを引き継ぐ
+// （こうしないと復元直後に同じ内容が別パスへ二重アップロードされてしまう）
+async function ghRestoreAll(onProgress) {
+  const repoRes = await ghApi("");
+  if (!repoRes.ok) throw new Error(`リポジトリにアクセスできません (HTTP ${repoRes.status})`);
+  const branch = (await repoRes.json()).default_branch || "main";
+  const treeRes = await ghApi(`/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  if (!treeRes.ok) throw new Error(`ファイル一覧の取得に失敗しました (HTTP ${treeRes.status})`);
+  const paths = ((await treeRes.json()).tree || [])
+    .filter((t) => t.type === "blob" && t.path.startsWith(GH_FOLDER + "/") && t.path.endsWith(".png"))
+    .map((t) => t.path);
+  const files = [];
+  const pathByFile = new Map();
+  for (let i = 0; i < paths.length; i++) {
+    if (onProgress) onProgress(`ダウンロード中… ${i + 1}/${paths.length}`);
+    const res = await ghApi(`/contents/${encodeGhPath(paths[i])}`, { accept: "application/vnd.github.raw+json" });
+    if (!res.ok) continue;
+    const file = new File([await res.arrayBuffer()], paths[i].split("/").pop(), { type: "image/png" });
+    files.push(file);
+    pathByFile.set(file, paths[i]);
+  }
+  return restoreFromPngFiles(files, { ghPathFor: (f) => pathByFile.get(f) });
 }
 
 // entries: [{ name: string, data: Uint8Array }] からZIPのBlobを生成する
@@ -1784,7 +2048,7 @@ function showPanel(name) {
   $(`panel-${name}`).classList.add("active");
   document.querySelector(`nav button[data-panel="${name}"]`).classList.add("active");
   if (name === "list") renderList();
-  if (name === "settings") updateStorageInfo();
+  if (name === "settings") { updateStorageInfo(); updateGhSyncStatus(); }
   // 画面更新後も同じタブを表示し続けられるよう、開いたタブを記録する
   localStorage.setItem(ACTIVE_PANEL_KEY, name);
 }
@@ -3015,6 +3279,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (settings.apiKey) {
     $("s-apikey").placeholder = `設定済み（末尾: ...${settings.apiKey.slice(-4)}）変更する場合のみ入力`;
   }
+  // GitHub同期のトークンもAPIキーと同じ方式（値は復元せず、設定済みであることだけ示す）
+  if (settings.ghToken) {
+    $("s-ghtoken").placeholder = `設定済み（末尾: ...${settings.ghToken.slice(-4)}）変更する場合のみ入力`;
+  }
+  $("s-ghrepo").value = settings.ghRepo ?? "";
   $("s-model").value = settings.model ?? DEFAULT_MODEL;
   // 保存済みのモデルが選択肢に無い場合（旧バージョンの自由入力値など）は既定値に戻す
   if ($("s-model").value === "") $("s-model").value = DEFAULT_MODEL;
@@ -3949,8 +4218,11 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (updated !== stored) await putImage(row.id, updated).catch(() => {});
           }
         }
+        // 内容が変わったのでリポジトリへ再アップロードする（同じパスを上書き）
+        row.gh_synced = false;
       }
       saveReceipts(rows);
+      requestGhSync();
       closeForm();
       showPanel("list");
       return;
@@ -3982,6 +4254,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     rows.push(row);
     saveReceipts(rows);
+    requestGhSync();
     closeForm();
     showMessage("ok", "保存しました。次の領収書を撮影できます。");
   });
@@ -3999,8 +4272,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!editingId) return;
     if (!confirm("この明細を削除しますか？")) return;
     const idToDelete = editingId;
-    saveReceipts(loadReceipts().filter((x) => x.id !== idToDelete));
+    const rows = loadReceipts();
+    const target = rows.find((x) => x.id === idToDelete);
+    // 誤登録の訂正なのでリポジトリ側も削除する（アップロード済みの行のみ）
+    if (ghConfigured() && target && (target.gh_synced || target.gh_path)) {
+      saveGhDeletes([...loadGhDeletes(), rowRepoPath(target)]);
+    }
+    saveReceipts(rows.filter((x) => x.id !== idToDelete));
     await deleteImage(idToDelete).catch(() => {});
+    requestGhSync();
     closeForm();
     showPanel("list");
   });
@@ -4174,27 +4454,83 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("settings-save-btn").addEventListener("click", () => {
     const inputKey = $("s-apikey").value.trim();
     const apiKey = inputKey || loadSettings().apiKey || "";
+    const inputGhToken = $("s-ghtoken").value.trim();
+    const ghToken = inputGhToken || loadSettings().ghToken || "";
+    const hadGhToken = !!loadSettings().ghToken;
     // 補正ON/OFFなど他のキーを消さないよう、既存設定へ上書きマージする
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
       ...loadSettings(),
       apiKey,
+      ghToken,
+      ghRepo: $("s-ghrepo").value.trim(),
       model: $("s-model").value.trim() || DEFAULT_MODEL,
     }));
     $("s-apikey").value = "";
     if (apiKey) {
       $("s-apikey").placeholder = `設定済み（末尾: ...${apiKey.slice(-4)}）変更する場合のみ入力`;
     }
+    $("s-ghtoken").value = "";
+    if (ghToken) {
+      $("s-ghtoken").placeholder = `設定済み（末尾: ...${ghToken.slice(-4)}）変更する場合のみ入力`;
+    }
     alert("設定を保存しました。");
+    updateGhSyncStatus();
+    // トークンを新しく設定した時は、既存の明細をまとめて初回同期する
+    if (ghToken && !hadGhToken) requestGhSync();
   });
 
-  // 全削除（証憑画像も含めて削除する）
+  // GitHub同期: 手動同期（自動同期が失敗していた分の追いつき用）
+  $("gh-sync-btn").addEventListener("click", async () => {
+    if (!ghConfigured()) {
+      alert("先にアクセストークンを入力して「設定を保存」してください。");
+      return;
+    }
+    const btn = $("gh-sync-btn");
+    btn.disabled = true;
+    try {
+      await processGhSync(true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // GitHub同期: リポジトリからの全件復元（機種変更・データ消失時用）
+  $("gh-restore-btn").addEventListener("click", async () => {
+    if (!ghConfigured()) {
+      alert("先にアクセストークンを入力して「設定を保存」してください。");
+      return;
+    }
+    if (!confirm("リポジトリ内の全明細を取り込みます。端末にある明細と重複するものは自動でスキップされます。よろしいですか？")) return;
+    const btn = $("gh-restore-btn");
+    const result = $("gh-restore-result");
+    btn.disabled = true;
+    try {
+      const summary = await ghRestoreAll((msg) => { result.textContent = msg; });
+      result.textContent = summary;
+      renderList();
+      updateGhSyncStatus();
+    } catch (err) {
+      result.textContent = "復元に失敗しました: " + err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 全削除（証憑画像も含めて削除する）。エクスポート後の端末整理が目的の操作なので、
+  // GitHubリポジトリのアーカイブには触れない（個別削除とは扱いを変えている）
   $("clear-btn").addEventListener("click", async () => {
-    if (!confirm("全明細と証憑画像を削除しますか？この操作は取り消せません。")) return;
+    const archiveNote = ghConfigured() ? "\nGitHubリポジトリ上のアーカイブは削除されず残ります。" : "";
+    if (!confirm("全明細と証憑画像を削除しますか？この操作は取り消せません。" + archiveNote)) return;
     saveReceipts([]);
     await clearImages().catch(() => {});
     renderList();
     alert("削除しました。");
   });
+
+  // GitHub同期: 前回失敗・オフライン中に溜まった未同期分を起動時とオンライン復帰時に追いつかせる
+  updateGhSyncStatus();
+  if (ghConfigured()) requestGhSync();
+  window.addEventListener("online", () => requestGhSync());
 
   // 画面更新前の状態を復元する（すべてのボタンの配線が終わった後に行う）。
   // 優先順位: 編集中だった既存明細 > 保存前の下書き > 解析前の選択写真 > 最後に開いていたタブ
