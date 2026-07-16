@@ -1,6 +1,8 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <!-- ホーム画面アイコン（icon-192.png / icon-512.png）のマスターSVG。
-       PNGを再生成する場合はこのSVGを512px/192pxでラスタライズする。 -->
+       PNGを再生成する場合はこのSVGを512px/192pxでラスタライズする。
+       構図はブランド共通の型: 雷が主役（中央やや左）、アプリのモチーフ（領収書）は
+       右下の小さなワンポイント（タイルの約1/3・前面）。Dashboard・LifeLoggerと揃えている -->
   <defs>
     <radialGradient id="bgr" cx="0.5" cy="0.3" r="1.0">
       <stop offset="0" stop-color="#4d357e"/>
@@ -16,22 +18,26 @@
     <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
       <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#7c3aed" flood-opacity="0.6"/>
     </filter>
+    <filter id="sh2" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#1d1136" flood-opacity="0.7"/>
+    </filter>
   </defs>
   <rect width="512" height="512" fill="url(#bgr)"/>
-  <!-- 領収書は稲妻の背面。ブランド他アイコン（副モチーフは右下）に合わせ、
-       鏡写し（左右反転）で右傾きにし、右下へ寄せる。
-       transformは右から順に適用: 傾き(-23.4°) → 左右反転(x=256軸) → 右下へ平行移動(40,52)。
-       反転により見た目の傾きは+23.4°（右傾き）になり、内部の明細行も右揃えになる -->
-  <g transform="translate(40 52) translate(512 0) scale(-1 1) rotate(-23.4 256 256)">
-    <path d="M136 30 h240 a14 14 0 0 1 14 14 v416 l-30 -22 -30 22 -30 -22 -30 22 -30 -22 -30 22 -30 -22 -30 22 v-416 a14 14 0 0 1 14 -14 Z" fill="#f2f2f0"/>
-    <rect x="166" y="86" width="180" height="17" rx="8" fill="#9aa0a8"/>
-    <rect x="166" y="130" width="130" height="17" rx="8" fill="#c2c6cc"/>
-    <rect x="166" y="174" width="154" height="17" rx="8" fill="#c2c6cc"/>
-    <rect x="166" y="218" width="110" height="17" rx="8" fill="#c2c6cc"/>
-    <rect x="166" y="286" width="180" height="22" rx="11" fill="#6f7680"/>
-  </g>
-  <g transform="translate(48 56) scale(0.78)" filter="url(#sh)">
+  <!-- 雷（三層: 白アウトライン72 → 紫縁40 → 金グラデ）。モチーフの場所を空けるため中央やや左 -->
+  <g transform="translate(14 48) scale(0.76)" filter="url(#sh)">
     <path d="M296 36 L138 296 L238 296 L198 476 L396 208 L286 208 L352 36 Z" fill="none" stroke="#f5f2fa" stroke-width="72" stroke-linejoin="round"/>
     <path d="M296 36 L138 296 L238 296 L198 476 L396 208 L286 208 L352 36 Z" fill="url(#bolt)" stroke="url(#edge)" stroke-width="40" stroke-linejoin="round"/>
+  </g>
+  <!-- 領収書（右下のワンポイント・前面）。鏡写し（左右反転）で右傾き23.4°。
+       transformは右から適用: 傾き → x=256軸で左右反転 → 縮小(0.38) → 右下へ移動 -->
+  <g transform="translate(272 252) scale(0.38)" filter="url(#sh2)">
+    <g transform="translate(512 0) scale(-1 1) rotate(-23.4 256 256)">
+      <path d="M136 30 h240 a14 14 0 0 1 14 14 v416 l-30 -22 -30 22 -30 -22 -30 22 -30 -22 -30 22 -30 -22 -30 22 v-416 a14 14 0 0 1 14 -14 Z" fill="#f2f2f0"/>
+      <rect x="166" y="86" width="180" height="17" rx="8" fill="#9aa0a8"/>
+      <rect x="166" y="130" width="130" height="17" rx="8" fill="#c2c6cc"/>
+      <rect x="166" y="174" width="154" height="17" rx="8" fill="#c2c6cc"/>
+      <rect x="166" y="218" width="110" height="17" rx="8" fill="#c2c6cc"/>
+      <rect x="166" y="286" width="180" height="22" rx="11" fill="#6f7680"/>
+    </g>
   </g>
 </svg>
